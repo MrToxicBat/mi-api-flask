@@ -3,6 +3,7 @@ from flask_cors import CORS
 import google.generativeai as genai
 import os
 
+# Configura tu API key desde variables de entorno
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = Flask(__name__)
@@ -19,7 +20,8 @@ def chat():
     try:
         imagen_bytes = imagen.read()
 
-        model = genai.GenerativeModel("gemini-pro-vision")
+        # Usa el modelo actualizado compatible con imágenes
+        model = genai.GenerativeModel("gemini-1.5-flash")
 
         response = model.generate_content([
             {"text": mensaje},
