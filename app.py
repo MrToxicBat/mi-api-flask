@@ -1,9 +1,10 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import google.generativeai as genai
+from google.generativeai.types import content_types
 import os
 
-# Configura la clave de la API (asegúrate de definir GEMINI_API_KEY en Render)
+# Configura la API Key
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = Flask(__name__)
@@ -28,7 +29,7 @@ def chat():
         model = genai.GenerativeModel("gemini-pro-vision")
         respuesta = model.generate_content([
             mensaje,
-            genai.Image.from_bytes(imagen_bytes)
+            content_types.ImageData(data=imagen_bytes, mime_type="image/jpeg")
         ])
         print("✅ Respuesta generada con éxito")
 
