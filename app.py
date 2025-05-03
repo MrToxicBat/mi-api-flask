@@ -38,3 +38,5 @@ def chat():
     except Exception as e:
         print("🔥 Error al procesar:", str(e))
         return jsonify({"respuesta": f"❌ Error en servidor: {str(e)}"})
+
+# Versión actualizada por Adrian
