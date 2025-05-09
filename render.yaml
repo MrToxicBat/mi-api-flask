@@ -2,5 +2,5 @@ services:
   - type: web
     name: mi-api-flask
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: bash build.sh
     startCommand: gunicorn app:app
