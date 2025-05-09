@@ -14,19 +14,25 @@ def chat():
     imagen = request.files.get("imagen")
     mensaje = request.form.get("mensaje", "")
 
-    if not imagen:
-        return jsonify({"respuesta": "⚠️ No se recibió imagen"})
-
     try:
-        imagen_bytes = imagen.read()
+        # Modelo Gemini 2.0 Flash
+        model = genai.GenerativeModel("gemini-2.0-flash")
 
-        # Usa el modelo actualizado compatible con imágenes
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        # Construcción del contenido multimodal
+        parts = []
+        if mensaje:
+            parts.append({"text": mensaje})
+        if imagen:
+            imagen_bytes = imagen.read()
+            parts.append({
+                "mime_type": imagen.mimetype,
+                "data": imagen_bytes
+            })
 
-        response = model.generate_content([
-            {"text": mensaje},
-            {"mime_type": "image/jpeg", "data": imagen_bytes}
-        ])
+        if not parts:
+            return jsonify({"respuesta": "⚠️ No se recibió entrada válida"})
+
+        response = model.generate_content(parts)
 
         return jsonify({"respuesta": response.text})
 
