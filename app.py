@@ -3,7 +3,6 @@ from flask_cors import CORS
 import google.generativeai as genai
 import os
 
-# Configura tu API key desde variables de entorno
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = Flask(__name__)
@@ -15,10 +14,8 @@ def chat():
     mensaje = request.form.get("mensaje", "")
 
     try:
-        # Modelo Gemini 2.0 Flash
         model = genai.GenerativeModel("gemini-2.0-flash")
 
-        # Construcción del contenido multimodal
         parts = []
         if mensaje:
             parts.append({"text": mensaje})
