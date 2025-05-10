@@ -1,4 +1,4 @@
-flask
-flask-cors
-gunicorn
+flask>=3.0.0
+flask-cors>=4.0.0
 google-generativeai>=0.8.5
+werkzeug>=3.0.0
