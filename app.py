@@ -17,7 +17,7 @@ app = Flask(__name__)
 # Configuración CORS específica para tu dominio WordPress
 CORS(app, resources={
     r"/api/chat": {
-        "origins": ["https://tudominio.com", "https://mi-api-flask-6i8o.onrender.com"],
+        "origins": ["https://code-soluction.com", "https://mi-api-flask-6i8o.onrender.com"],
         "methods": ["POST"],
         "allow_headers": ["Content-Type"]
     }
