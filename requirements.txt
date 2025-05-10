@@ -1,4 +1,5 @@
-flask>=3.0.0
-flask-cors>=4.0.0
+gunicorn==20.1.0  # Versión específica para evitar problemas
+flask
+flask-cors
 google-generativeai>=0.8.5
-werkzeug>=3.0.0
+python-dotenv  # Opcional, pero útil para variables de entorno locales
