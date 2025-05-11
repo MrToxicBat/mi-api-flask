@@ -6,7 +6,7 @@ import google.generativeai as genai
 from werkzeug.utils import secure_filename
 
 # Configuración básica de logging
-typelogging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configurar la API de Gemini (Flash 2.0)
