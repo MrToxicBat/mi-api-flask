@@ -35,10 +35,11 @@ def allowed_file(filename):
 @app.route("/api/chat", methods=["POST"])
 def chat():
     try:
-        # Mensaje de sistema: respuesta solo en español y formato Markdown
+        # Mensaje de sistema mejorado: español + viñetas bien formateadas
         SYSTEM_PROMPT = (
-            'Eres un asistente experto que responde solamente en español. '
-            'Formatea la respuesta con viñetas Markdown ("- ") o párrafos claros.'
+            'Eres un asistente experto que responde solo en español. '
+            'Organiza tu respuesta con viñetas Markdown, cada punto en una línea nueva que empiece con "- ". '
+            'Usa encabezados en negrita separados por una línea en blanco y no incluyas otros idiomas ni asteriscos extra. '
         )
         parts = [{"text": SYSTEM_PROMPT}]
 
@@ -53,9 +54,7 @@ def chat():
             imagen  = request.files.get("imagen")
             if mensaje:
                 parts.append({"text": mensaje})
-            if imagen:
-                if not allowed_file(imagen.filename):
-                    return jsonify({"error": "Tipo de archivo no permitido"}), 400
+            if imagen and allowed_file(imagen.filename):
                 filename = secure_filename(imagen.filename)
                 imagen_data = {"mime_type": imagen.content_type, "data": imagen.read()}
                 parts.append(imagen_data)
@@ -82,10 +81,11 @@ def generate_title():
         data = request.get_json() or {}
         mensajes = data.get('messages', [])
         prompt = (
-            'Dame un título muy breve (5 palabras máx.) que resuma esta conversación en español:'
+            'Dame un título muy breve (5 palabras máx.) que resuma esta conversación en español, '
+            'utilizando solo texto.'
             + '\n'.join(mensajes)
         )
-        # Usamos el mismo modelo Gemini Flash 2.0 para generar título
+        # Usamos Gemini Flash 2.0 para título
         title_model = genai.GenerativeModel("models/gemini-2.0-flash")
         resp = title_model.generate_content([{"text": prompt}])
         titulo = getattr(resp, 'text', '').strip()
