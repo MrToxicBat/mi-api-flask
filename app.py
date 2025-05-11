@@ -1,9 +1,9 @@
 import os
+import uuid
 import logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import google.generativeai as genai
-from werkzeug.utils import secure_filename
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -13,86 +13,78 @@ logger = logging.getLogger(__name__)
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = Flask(__name__)
-# CORS para endpoints de API
-CORS(app, resources={
-    r"/api/*": {
-        "origins": [
-            "https://code-soluction.com",
-            "https://mi-api-flask-6i8o.onrender.com"
-        ],
-        "methods": ["GET", "POST"],
-        "allow_headers": ["Content-Type"]
-    }
-})
+CORS(app)
 
-# Límite de subida: 16 MB
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+# In-memory store for tracking conversation steps per session
+session_steps = {}
+# Opcional: almacenar respuestas del usuario para contexto completo
+session_data = {}
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+# Instrucción del sistema: restringir respuestas solo a medicina
+def get_system_instruction():
+    return (
+        "Eres una IA médica especializada. Solo respondes preguntas relacionadas con medicina. "
+        "Para cualquier otra consulta, responde: 'Lo siento, no puedo ayudar con eso; esta IA solo responde preguntas relacionadas con medicina.'"
+    )
 
-@app.route("/api/chat", methods=["POST"])
+# Preguntas interactivas predefinidas
+questions = {
+    1: "🖋️ **Parte 1: Datos Demográficos**\nPor favor, indícame:\n1. Edad exacta\n2. Sexo asignado al nacer y género actual\n3. Ocupación (y si existe algún riesgo relacionado con su trabajo)",
+    2: "🔍 **Parte 2: Antecedentes Personales y Familiares**\nPor favor, indícame:\n1. Enfermedades crónicas (p.ej., hipertensión, diabetes, etc.)\n2. Cirugías previas (¿Cuándo y por qué?)\n3. Antecedentes familiares de patologías graves",  
+    3: "🌀 **Parte 3: Historia de la Enfermedad Actual**\nPor favor, detalla:\n1. Motivo de consulta principal\n2. Fecha de inicio y evolución\n3. Características del síntoma (localización, intensidad, calidad)\n4. Factores que alivian o agravan",  
+    4: "🔍 **Parte 4: Revisión por Sistemas**\nIndica si presenta alguno de los siguientes síntomas:\n- Cardiopulmonar (fiebre, tos, disnea)\n- Hematológico (sangrados, moretones)\n- Musculoesquelético (rigidez, hinchazón)\n- Gastrointestinal (náuseas, vómitos)\n- Genitourinario (dolor al orinar, cambios en la frecuencia)\n- Neurológico (cefalea, mareos)",  
+    5: "💊 **Parte 5: Alergias y Medicación Actual**\nPor favor, indícame:\n1. Medicamentos en uso (nombre, dosis y frecuencia)\n2. Alergias conocidas (fármacos, alimentos, látex)\n3. Adherencia al tratamiento",  
+    6: "🚬 **Parte 6: Estilo de Vida y Exposición**\nDetalla:\n1. Tabaquismo (cantidad y duración)\n2. Consumo de alcohol o drogas (cantidad y frecuencia)\n3. Exposición ocupacional/ambiental relevante",  
+    7: "📅 **Parte 7: Detalles de la Imagen Médica**\nPor favor, indícame:\n1. Tipo de imagen (radiografía, TAC, RM, ecografía u otra)\n2. Fecha y modalidad\n3. Proyecciones y calidad\n4. Zona de interés o hallazgos observados"
+}
+
+@app.route('/api/chat', methods=['POST'])
 def chat():
-    try:
-        # Mensaje de sistema mejorado: español, emojis y formato organizado
-        SYSTEM_PROMPT = (
-            'Eres un asistente experto que responde sólo en español. '  
-            'Estructura tu respuesta con encabezados y emojis, por ejemplo: 📌, 🗓️, 📝. '  
-            'Dentro de cada sección, usa viñetas con emojis como ✅ o ➡️. '  
-            'Separa bien las secciones con líneas en blanco y evita usar Markdown crudo (**) innecesario.'
-        )
-        parts = [{"text": SYSTEM_PROMPT}]
+    data = request.json
+    session_id = data.get('session_id')
+    user_message = data.get('message', '').strip()
 
-        # Historial o mensaje único
-        if request.is_json:
-            data = request.get_json()
-            for text in data.get('messages', []):
-                parts.append({"text": text})
+    # Obtener instrucción del sistema
+    system_instruction = get_system_instruction()
+
+    # Iniciar nueva sesión si no existe
+    if not session_id or session_id not in session_steps:
+        session_id = str(uuid.uuid4())
+        session_steps[session_id] = 1
+        session_data[session_id] = []
+        prompt = questions[1]
+    else:
+        # Guardar respuesta del usuario
+        session_data[session_id].append(user_message)
+        step = session_steps[session_id]
+        # Avanzar al siguiente paso o generar análisis
+        if step < len(questions):
+            session_steps[session_id] = step + 1
+            prompt = questions[step + 1]
         else:
-            mensaje = request.form.get("mensaje", "").strip()
-            imagen  = request.files.get("imagen")
-            if mensaje:
-                parts.append({"text": mensaje})
-            if imagen and allowed_file(imagen.filename):
-                filename = secure_filename(imagen.filename)
-                imagen_data = {"mime_type": imagen.content_type, "data": imagen.read()}
-                parts.append(imagen_data)
+            # Todas las partes completadas: construir prompt de análisis
+            full_info = "\n".join(f"- {ans}" for ans in session_data[session_id])
+            prompt = (
+                "Gracias por la información.\nCon estos datos, analiza en profundidad las imágenes médicas proporcionadas y sugiere posibles diagnósticos basados en síntomas y hallazgos.\n"
+                f"Información recopilada:\n{full_info}\n"
+                "Utiliza un formato claro, con secciones de hallazgos, hipótesis diagnóstica y recomendaciones para el médico."
+            )
 
-        if len(parts) <= 1:
-            return jsonify({"error": "Se requiere un mensaje válido o historial."}), 400
+    # Combinar instrucción del sistema y prompt de usuario
+    full_prompt = f"{system_instruction}\n\n{prompt}"
 
-        # Generación multimodal con Gemini Flash 2.0
+    try:
         model = genai.GenerativeModel("models/gemini-2.0-flash")
-        response = model.generate_content(parts)
-
-        if not getattr(response, "text", None):
-            return jsonify({"error": "No se recibió respuesta de la IA"}), 500
-
-        return jsonify({"respuesta": response.text, "status": "success"})
-
+        resp = model.generate_content([{"text": full_prompt}])
+        ai_response = getattr(resp, 'text', '').strip()
+        return jsonify({
+            "session_id": session_id,
+            "response": ai_response
+        })
     except Exception as e:
         logger.error(f"Error en /api/chat: {e}", exc_info=True)
-        return jsonify({"error": str(e), "status": "error"}), 500
-
-@app.route("/api/generate-title", methods=["POST"])
-def generate_title():
-    try:
-        data = request.get_json() or {}
-        mensajes = data.get('messages', [])
-        prompt = (
-            'Dame un título muy breve (5 palabras máx.) en español que resuma esta conversación, '  
-            'usa emojis y un formato claro.\n\n' + '\n'.join(mensajes)
-        )
-        title_model = genai.GenerativeModel("models/gemini-2.0-flash")
-        resp = title_model.generate_content([{"text": prompt}])
-        titulo = getattr(resp, 'text', '').strip()
-        return jsonify({"title": titulo or "Nueva conversación"})
-
-    except Exception as e:
-        logger.error(f"Error en /api/generate-title: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
