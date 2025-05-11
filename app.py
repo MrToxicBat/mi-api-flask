@@ -6,7 +6,7 @@ import google.generativeai as genai
 from werkzeug.utils import secure_filename
 
 # Configuración básica de logging
-logging.basicConfig(level=logging.INFO)
+typelogging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configurar la API de Gemini (Flash 2.0)
@@ -14,11 +14,14 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = Flask(__name__)
 
-# CORS: permite solo tu dominio y tu API
+# CORS: permitir rutas de API bajo /api/*
 CORS(app, resources={
-    r"/api/chat": {
-        "origins": ["https://code-soluction.com", "https://mi-api-flask-6i8o.onrender.com"],
-        "methods": ["POST"],
+    r"/api/*": {
+        "origins": [
+            "https://code-soluction.com",
+            "https://mi-api-flask-6i8o.onrender.com"
+        ],
+        "methods": ["GET", "POST"],
         "allow_headers": ["Content-Type"]
     }
 })
@@ -80,6 +83,27 @@ def chat():
         return jsonify({
             "error": f"Error al procesar la solicitud: {e}",
             "status": "error"
+        }), 500
+
+@app.route("/api/generate-title", methods=["POST"])
+def generate_title():
+    try:
+        data = request.get_json() or {}
+        mensajes = data.get('messages', [])
+        # Construir prompt
+        prompt = (
+            "Dame un título muy breve (5 palabras máx.) que resuma esta conversación:\n\n"
+            + "\n".join(mensajes)
+        )
+        # Usar un modelo de texto para título
+        title_model = genai.GenerativeModel("models/text-bison-001")
+        resp = title_model.generate_content([{"text": prompt}])
+        titulo = getattr(resp, 'text', '').strip()
+        return jsonify({"title": titulo or "Nueva conversación"})
+    except Exception as e:
+        logger.error(f"Error en /api/generate-title: {e}", exc_info=True)
+        return jsonify({
+            "error": f"Error al generar título: {e}"
         }), 500
 
 if __name__ == "__main__":
