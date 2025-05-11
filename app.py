@@ -5,16 +5,15 @@ from flask_cors import CORS
 import google.generativeai as genai
 from werkzeug.utils import secure_filename
 
-# Configuración básica de logging
+# Configuración de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configurar la API de Gemini (Flash 2.0)
+# Configurar la API de Gemini
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = Flask(__name__)
-
-# CORS: permitir rutas de API bajo /api/*
+# CORS para endpoints de API
 CORS(app, resources={
     r"/api/*": {
         "origins": [
@@ -27,52 +26,48 @@ CORS(app, resources={
 })
 
 # Límite de subida: 16 MB
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+db_limit = 16 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = db_limit
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
 def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
     try:
-        mensaje = request.form.get("mensaje", "").strip()
-        imagen  = request.files.get("imagen")
+        parts = []
+        # Si se envía JSON, usamos el historial completo
+        if request.is_json:
+            data = request.get_json()
+            for text in data.get('messages', []):
+                parts.append({"text": text})
+        else:
+            # Fallback a FormData para mensaje e imagen
+            mensaje = request.form.get("mensaje", "").strip()
+            imagen  = request.files.get("imagen")
+            if mensaje:
+                parts.append({"text": mensaje})
+            if imagen:
+                if not allowed_file(imagen.filename):
+                    return jsonify({"error": "Tipo de archivo no permitido"}), 400
+                filename = secure_filename(imagen.filename)
+                logger.info(f"Imagen recibida: {filename} ({imagen.content_type})")
+                imagen_data = {"mime_type": imagen.content_type, "data": imagen.read()}
+                parts.append(imagen_data)
+        if not parts:
+            return jsonify({"error": "Se requiere 'mensaje' o 'messages'"}), 400
 
-        if not mensaje and not imagen:
-            return jsonify({"error": "Se requiere 'mensaje' o 'imagen'"}), 400
-
-        imagen_data = None
-        if imagen:
-            if not allowed_file(imagen.filename):
-                return jsonify({"error": "Tipo de archivo no permitido"}), 400
-            filename = secure_filename(imagen.filename)
-            logger.info(f"Imagen recibida: {filename} ({imagen.content_type})")
-            imagen_data = {
-                "mime_type": imagen.content_type,
-                "data": imagen.read()
-            }
-
-        # Siempre usamos Gemini 2.0 Flash (multimodal)
+        # Generación con Gemini Flash 2.0
         model_name = "models/gemini-2.0-flash"
         model = genai.GenerativeModel(model_name)
-
-        parts = []
-        if mensaje:
-            parts.append({"text": mensaje})
-        if imagen_data:
-            parts.append(imagen_data)
-
         logger.info(f"Enviando solicitud a {model_name}...")
         response = model.generate_content(parts)
 
-        # response.text contiene el texto generado
         if not getattr(response, "text", None):
             logger.error("La API no devolvió texto")
             return jsonify({"error": "No se recibió respuesta de la IA"}), 500
 
-        logger.info("Respuesta generada exitosamente")
         return jsonify({
             "respuesta": response.text,
             "status": "success"
@@ -80,31 +75,26 @@ def chat():
 
     except Exception as e:
         logger.error(f"Error en /api/chat: {e}", exc_info=True)
-        return jsonify({
-            "error": f"Error al procesar la solicitud: {e}",
-            "status": "error"
-        }), 500
+        return jsonify({"error": f"Error al procesar la solicitud: {e}", "status": "error"}), 500
 
 @app.route("/api/generate-title", methods=["POST"])
 def generate_title():
     try:
         data = request.get_json() or {}
         mensajes = data.get('messages', [])
-        # Construir prompt
         prompt = (
             "Dame un título muy breve (5 palabras máx.) que resuma esta conversación:\n\n"
             + "\n".join(mensajes)
         )
-        # Usar un modelo de texto para título
-        title_model = genai.GenerativeModel("models/text-bison-001")
+        # Modelo corregido
+        title_model = genai.GenerativeModel("models/chat-bison-001")
         resp = title_model.generate_content([{"text": prompt}])
         titulo = getattr(resp, 'text', '').strip()
         return jsonify({"title": titulo or "Nueva conversación"})
+
     except Exception as e:
         logger.error(f"Error en /api/generate-title: {e}", exc_info=True)
-        return jsonify({
-            "error": f"Error al generar título: {e}"
-        }), 500
+        return jsonify({"error": f"Error al generar título: {e}"}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
