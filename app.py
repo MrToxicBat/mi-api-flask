@@ -38,8 +38,7 @@ def chat():
         # Mensaje de sistema: respuesta solo en español y formato Markdown
         SYSTEM_PROMPT = (
             'Eres un asistente experto que responde solamente en español. '
-            'Formatea la respuesta de forma clara usando viñetas Markdown (- punto) '
-            'o párrafos bien separados, sin incluir otros idiomas.'
+            'Formatea la respuesta con viñetas Markdown ("- ") o párrafos claros.'
         )
         parts = [{"text": SYSTEM_PROMPT}]
 
@@ -58,27 +57,24 @@ def chat():
                 if not allowed_file(imagen.filename):
                     return jsonify({"error": "Tipo de archivo no permitido"}), 400
                 filename = secure_filename(imagen.filename)
-                logger.info(f"Imagen recibida: {filename} ({imagen.content_type})")
                 imagen_data = {"mime_type": imagen.content_type, "data": imagen.read()}
                 parts.append(imagen_data)
 
         if len(parts) <= 1:
-            return jsonify({"error": "Se requiere mensaje"}), 400
+            return jsonify({"error": "Se requiere mensaje o historial"}), 400
 
         # Generación multimodal con Gemini Flash 2.0
         model = genai.GenerativeModel("models/gemini-2.0-flash")
-        logger.info("Enviando solicitud a Gemini 2.0 Flash…")
         response = model.generate_content(parts)
 
         if not getattr(response, "text", None):
-            logger.error("La API no devolvió texto")
             return jsonify({"error": "No se recibió respuesta de la IA"}), 500
 
         return jsonify({"respuesta": response.text, "status": "success"})
 
     except Exception as e:
         logger.error(f"Error en /api/chat: {e}", exc_info=True)
-        return jsonify({"error": f"Error procesando la solicitud: {e}", "status": "error"}), 500
+        return jsonify({"error": str(e), "status": "error"}), 500
 
 @app.route("/api/generate-title", methods=["POST"])
 def generate_title():
@@ -86,18 +82,18 @@ def generate_title():
         data = request.get_json() or {}
         mensajes = data.get('messages', [])
         prompt = (
-            'Dame un título muy breve (5 palabras máx.) que resuma esta conversación:\n\n' +
-            '\n'.join(mensajes)
+            'Dame un título muy breve (5 palabras máx.) que resuma esta conversación en español:'
+            + '\n'.join(mensajes)
         )
-        # Modelo corregido: chat-bison-001
-        title_model = genai.GenerativeModel("models/chat-bison-001")
+        # Usamos el mismo modelo Gemini Flash 2.0 para generar título
+        title_model = genai.GenerativeModel("models/gemini-2.0-flash")
         resp = title_model.generate_content([{"text": prompt}])
         titulo = getattr(resp, 'text', '').strip()
         return jsonify({"title": titulo or "Nueva conversación"})
 
     except Exception as e:
         logger.error(f"Error en /api/generate-title: {e}", exc_info=True)
-        return jsonify({"error": f"Error al generar título: {e}"}), 500
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
