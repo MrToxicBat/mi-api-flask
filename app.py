@@ -35,15 +35,15 @@ def allowed_file(filename):
 @app.route("/api/chat", methods=["POST"])
 def chat():
     try:
-        # Mensaje de sistema para forzar español y formato Markdown
+        # Mensaje de sistema: respuesta solo en español y formato Markdown
         SYSTEM_PROMPT = (
-            "Eres un asistente experto que responde _solamente_ en español. "
-            "Formatea la respuesta de forma clara usando viñetas Markdown ("- punto") "
-            "o párrafos bien separados, sin incluir otros idiomas."
+            'Eres un asistente experto que responde solamente en español. '
+            'Formatea la respuesta de forma clara usando viñetas Markdown (- punto) '
+            'o párrafos bien separados, sin incluir otros idiomas.'
         )
         parts = [{"text": SYSTEM_PROMPT}]
 
-        # Si se envía JSON, usamos el historial completo
+        # Si se envía JSON con historial completo
         if request.is_json:
             data = request.get_json()
             for text in data.get('messages', []):
@@ -63,7 +63,7 @@ def chat():
                 parts.append(imagen_data)
 
         if len(parts) <= 1:
-            return jsonify({"error": "Se requiere 'mensaje' o 'messages'"}), 400
+            return jsonify({"error": "Se requiere mensaje"}), 400
 
         # Generación multimodal con Gemini Flash 2.0
         model = genai.GenerativeModel("models/gemini-2.0-flash")
@@ -86,10 +86,10 @@ def generate_title():
         data = request.get_json() or {}
         mensajes = data.get('messages', [])
         prompt = (
-            "Dame un título muy breve (5 palabras máx.) que resuma esta conversación:\n\n"
-            + "\n".join(mensajes)
+            'Dame un título muy breve (5 palabras máx.) que resuma esta conversación:\n\n' +
+            '\n'.join(mensajes)
         )
-        # Modelo corregido para V1beta
+        # Modelo corregido: chat-bison-001
         title_model = genai.GenerativeModel("models/chat-bison-001")
         resp = title_model.generate_content([{"text": prompt}])
         titulo = getattr(resp, 'text', '').strip()
