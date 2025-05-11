@@ -26,8 +26,7 @@ CORS(app, resources={
 })
 
 # Límite de subida: 16 MB
-db_limit = 16 * 1024 * 1024
-app.config['MAX_CONTENT_LENGTH'] = db_limit
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
 def allowed_file(filename):
@@ -37,13 +36,14 @@ def allowed_file(filename):
 def chat():
     try:
         parts = []
-        # Si se envía JSON, usamos el historial completo
+
+        # Si viene JSON con historial completo
         if request.is_json:
             data = request.get_json()
             for text in data.get('messages', []):
                 parts.append({"text": text})
         else:
-            # Fallback a FormData para mensaje e imagen
+            # Fallback a FormData para texto e imagen
             mensaje = request.form.get("mensaje", "").strip()
             imagen  = request.files.get("imagen")
             if mensaje:
@@ -52,30 +52,30 @@ def chat():
                 if not allowed_file(imagen.filename):
                     return jsonify({"error": "Tipo de archivo no permitido"}), 400
                 filename = secure_filename(imagen.filename)
-                logger.info(f"Imagen recibida: {filename} ({imagen.content_type})")
-                imagen_data = {"mime_type": imagen.content_type, "data": imagen.read()}
+                logger.info(f"Imagen recibida: {filename}")
+                imagen_data = {
+                    "mime_type": imagen.content_type,
+                    "data": imagen.read()
+                }
                 parts.append(imagen_data)
+
         if not parts:
             return jsonify({"error": "Se requiere 'mensaje' o 'messages'"}), 400
 
-        # Generación con Gemini Flash 2.0
-        model_name = "models/gemini-2.0-flash"
-        model = genai.GenerativeModel(model_name)
-        logger.info(f"Enviando solicitud a {model_name}...")
+        # Multimodal con Gemini Flash 2.0
+        model = genai.GenerativeModel("models/gemini-2.0-flash")
+        logger.info("Enviando solicitud a Gemini 2.0 Flash…")
         response = model.generate_content(parts)
 
         if not getattr(response, "text", None):
             logger.error("La API no devolvió texto")
             return jsonify({"error": "No se recibió respuesta de la IA"}), 500
 
-        return jsonify({
-            "respuesta": response.text,
-            "status": "success"
-        })
+        return jsonify({"respuesta": response.text, "status": "success"})
 
     except Exception as e:
         logger.error(f"Error en /api/chat: {e}", exc_info=True)
-        return jsonify({"error": f"Error al procesar la solicitud: {e}", "status": "error"}), 500
+        return jsonify({"error": f"Error procesando la solicitud: {e}", "status": "error"}), 500
 
 @app.route("/api/generate-title", methods=["POST"])
 def generate_title():
@@ -86,10 +86,12 @@ def generate_title():
             "Dame un título muy breve (5 palabras máx.) que resuma esta conversación:\n\n"
             + "\n".join(mensajes)
         )
-        # Modelo corregido
+
+        # Modelo corregido: chat-bison-001
         title_model = genai.GenerativeModel("models/chat-bison-001")
         resp = title_model.generate_content([{"text": prompt}])
         titulo = getattr(resp, 'text', '').strip()
+
         return jsonify({"title": titulo or "Nueva conversación"})
 
     except Exception as e:
