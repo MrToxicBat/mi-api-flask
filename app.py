@@ -35,21 +35,21 @@ def allowed_file(filename):
 @app.route("/api/chat", methods=["POST"])
 def chat():
     try:
-        # Mensaje de sistema mejorado: español + viñetas bien formateadas
+        # Mensaje de sistema mejorado: español, emojis y formato organizado
         SYSTEM_PROMPT = (
-            'Eres un asistente experto que responde solo en español. '
-            'Organiza tu respuesta con viñetas Markdown, cada punto en una línea nueva que empiece con "- ". '
-            'Usa encabezados en negrita separados por una línea en blanco y no incluyas otros idiomas ni asteriscos extra. '
+            'Eres un asistente experto que responde sólo en español. '  
+            'Estructura tu respuesta con encabezados y emojis, por ejemplo: 📌, 🗓️, 📝. '  
+            'Dentro de cada sección, usa viñetas con emojis como ✅ o ➡️. '  
+            'Separa bien las secciones con líneas en blanco y evita usar Markdown crudo (**) innecesario.'
         )
         parts = [{"text": SYSTEM_PROMPT}]
 
-        # Si se envía JSON con historial completo
+        # Historial o mensaje único
         if request.is_json:
             data = request.get_json()
             for text in data.get('messages', []):
                 parts.append({"text": text})
         else:
-            # Fallback a FormData para texto e imagen
             mensaje = request.form.get("mensaje", "").strip()
             imagen  = request.files.get("imagen")
             if mensaje:
@@ -60,7 +60,7 @@ def chat():
                 parts.append(imagen_data)
 
         if len(parts) <= 1:
-            return jsonify({"error": "Se requiere mensaje o historial"}), 400
+            return jsonify({"error": "Se requiere un mensaje válido o historial."}), 400
 
         # Generación multimodal con Gemini Flash 2.0
         model = genai.GenerativeModel("models/gemini-2.0-flash")
@@ -81,11 +81,9 @@ def generate_title():
         data = request.get_json() or {}
         mensajes = data.get('messages', [])
         prompt = (
-            'Dame un título muy breve (5 palabras máx.) que resuma esta conversación en español, '
-            'utilizando solo texto.'
-            + '\n'.join(mensajes)
+            'Dame un título muy breve (5 palabras máx.) en español que resuma esta conversación, '  
+            'usa emojis y un formato claro.\n\n' + '\n'.join(mensajes)
         )
-        # Usamos Gemini Flash 2.0 para título
         title_model = genai.GenerativeModel("models/gemini-2.0-flash")
         resp = title_model.generate_content([{"text": prompt}])
         titulo = getattr(resp, 'text', '').strip()
