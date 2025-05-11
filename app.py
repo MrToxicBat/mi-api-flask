@@ -35,9 +35,15 @@ def allowed_file(filename):
 @app.route("/api/chat", methods=["POST"])
 def chat():
     try:
-        parts = []
+        # Mensaje de sistema para forzar español y formato Markdown
+        SYSTEM_PROMPT = (
+            "Eres un asistente experto que responde _solamente_ en español. "
+            "Formatea la respuesta de forma clara usando viñetas Markdown ("- punto") "
+            "o párrafos bien separados, sin incluir otros idiomas."
+        )
+        parts = [{"text": SYSTEM_PROMPT}]
 
-        # Si viene JSON con historial completo
+        # Si se envía JSON, usamos el historial completo
         if request.is_json:
             data = request.get_json()
             for text in data.get('messages', []):
@@ -52,17 +58,14 @@ def chat():
                 if not allowed_file(imagen.filename):
                     return jsonify({"error": "Tipo de archivo no permitido"}), 400
                 filename = secure_filename(imagen.filename)
-                logger.info(f"Imagen recibida: {filename}")
-                imagen_data = {
-                    "mime_type": imagen.content_type,
-                    "data": imagen.read()
-                }
+                logger.info(f"Imagen recibida: {filename} ({imagen.content_type})")
+                imagen_data = {"mime_type": imagen.content_type, "data": imagen.read()}
                 parts.append(imagen_data)
 
-        if not parts:
+        if len(parts) <= 1:
             return jsonify({"error": "Se requiere 'mensaje' o 'messages'"}), 400
 
-        # Multimodal con Gemini Flash 2.0
+        # Generación multimodal con Gemini Flash 2.0
         model = genai.GenerativeModel("models/gemini-2.0-flash")
         logger.info("Enviando solicitud a Gemini 2.0 Flash…")
         response = model.generate_content(parts)
@@ -86,12 +89,10 @@ def generate_title():
             "Dame un título muy breve (5 palabras máx.) que resuma esta conversación:\n\n"
             + "\n".join(mensajes)
         )
-
-        # Modelo corregido: chat-bison-001
+        # Modelo corregido para V1beta
         title_model = genai.GenerativeModel("models/chat-bison-001")
         resp = title_model.generate_content([{"text": prompt}])
         titulo = getattr(resp, 'text', '').strip()
-
         return jsonify({"title": titulo or "Nueva conversación"})
 
     except Exception as e:
