@@ -21,7 +21,7 @@ CORS(app,
 # ——— Inicializar Gemini ———
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-# Modelo multimodal válido
+# Modelo multimodal válido (detectado con /api/list-models)
 MODEL_NAME = "models/gemini-2.0-flash"
 
 # ——— Flujo de preguntas ———
@@ -52,7 +52,7 @@ def get_system_instruction():
     return (
         "Eres una IA médica multimodal. "
         "Primero analiza cualquier imagen médica que te envíen. "
-        "Solo después, recopila datos clínicos paso a paso y al final sugiere diagnósticos."
+        "Solo después, recopila datos clínicos paso a paso y al final sugiere diagnósticos y recomendaciones."
     )
 
 def build_summary(collected: dict) -> str:
@@ -62,7 +62,7 @@ def build_summary(collected: dict) -> str:
              for k, v in collected.items()]
     return "Información recopilada hasta ahora:\n" + "\n".join(lines) + "\n\n"
 
-# ——— Almacén en memoria con estructura avanzada ———
+# ——— Estado en memoria ———
 # session_data[sid] = {
 #   "fields": { ... },
 #   "image_analyzed": bool
@@ -73,8 +73,8 @@ session_data = {}
 def chat():
     data       = request.json or {}
     user_text  = data.get('message', '').strip()
-    image_b64  = data.get('image')
-    image_type = data.get('image_type')
+    image_b64  = data.get('image')       # Base64 puro
+    image_type = data.get('image_type')  # e.g. "image/png"
 
     # — Inicializar sesión si es nueva —
     sid = flask_session.get('session_id')
@@ -88,75 +88,58 @@ def chat():
         }
         logger.info(f"Nueva sesión {sid}")
 
-    step       = flask_session['step']
+    step       = flask_session.get('step', 0)
     state      = session_data[sid]
     collected  = state["fields"]
     image_done = state["image_analyzed"]
 
-    # — Caso 1: imagen nueva y aún no la analizamos —
+    parts = []
+    # — Caso 1: analizar imagen antes que nada —
     if image_b64 and not image_done:
-        # Vamos a analizar la imagen primero
-        full_prompt = (
-            f"{get_system_instruction()}\n\n"
-            "Por favor, analiza esta imagen médica y describe hallazgos relevantes."
-        )
-        inputs = [
-            {"image": {"data": image_b64, "mime_type": image_type}},
-            {"text": full_prompt}
-        ]
-
-        # Marcamos la imagen como ya analizada
+        parts.append({
+            "mime_type": image_type,
+            "data": image_b64
+        })
+        prompt_text = "Por favor, analiza esta imagen médica y describe hallazgos relevantes."
         state["image_analyzed"] = True
 
-        try:
-            model = genai.GenerativeModel(MODEL_NAME)
-            resp  = model.generate_content(inputs)
-            ai_text = getattr(resp, "text", "").strip()
-            return jsonify({"response": ai_text})
-        except Exception as e:
-            logger.error("Error analizando imagen", exc_info=True)
-            return jsonify({"error": str(e)}), 500
-
-    # — Caso 2: después de imagen (o sin imagen) → flujo de preguntas —
-
-    # Si el usuario envía texto y faltan campos, lo guardamos
-    if user_text and step < len(required_fields):
-        campo = required_fields[step]
-        collected[campo] = user_text
-        logger.info(f"Sesión {sid}: guardado {campo} = {user_text!r}")
-        step += 1
-        flask_session['step'] = step
-
-    # Construir el siguiente prompt
-    if step < len(required_fields):
-        # Pedimos el siguiente dato
-        siguiente   = required_fields[step]
-        question    = field_prompts[siguiente].format(**collected)
-        summary_txt = build_summary(collected)
-        full_prompt = (
-            f"{get_system_instruction()}\n\n"
-            f"{summary_txt}{question}"
-        )
     else:
-        # Ya recogimos todo: hacemos análisis final
-        info_lines = "\n".join(f"- {k}: {v}" for k, v in collected.items())
-        conclusion = (
-            "Gracias por toda la información. Con estos datos, analiza en profundidad los hallazgos "
-            "y sugiere diagnósticos, hipótesis y recomendaciones.\n\n"
-            f"Información recopilada:\n{info_lines}"
-        )
-        full_prompt = f"{get_system_instruction()}\n\n{conclusion}"
-        # Limpiar sesión para nueva conversación
-        session_data.pop(sid, None)
-        flask_session.pop('session_id', None)
-        flask_session.pop('step', None)
-        logger.info(f"Sesión {sid} completada")
+        # — Guardar texto en campo si corresponde —
+        if user_text and step < len(required_fields):
+            campo = required_fields[step]
+            collected[campo] = user_text
+            logger.info(f"Sesión {sid}: guardado {campo} = {user_text!r}")
+            step += 1
+            flask_session['step'] = step
 
-    # Enviamos al modelo
-    inputs = [{"text": full_prompt}]
+        # — Preparar siguiente prompt —
+        if step < len(required_fields):
+            siguiente = required_fields[step]
+            question = field_prompts[siguiente].format(**collected)
+            summary = build_summary(collected)
+            prompt_text = summary + question
+        else:
+            # — Análisis final —
+            info_lines = "\n".join(f"- {k}: {v}" for k, v in collected.items())
+            prompt_text = (
+                "Gracias por toda la información. Con estos datos, analiza en profundidad los hallazgos "
+                "y sugiere diagnósticos, hipótesis y recomendaciones.\n\n"
+                f"Información recopilada:\n{info_lines}"
+            )
+            # reset session
+            session_data.pop(sid, None)
+            flask_session.pop('session_id', None)
+            flask_session.pop('step', None)
+            logger.info(f"Sesión {sid} completada")
+
+    # — Siempre añadimos el texto con la instrucción de sistema —
+    full_text = f"{get_system_instruction()}\n\n{prompt_text}"
+    parts.append({"text": full_text})
+
+    # — Llamada multimodal con la lista de parts —
     try:
         model = genai.GenerativeModel(MODEL_NAME)
-        resp  = model.generate_content(inputs)
+        resp  = model.generate_content({"parts": parts})
         ai_text = getattr(resp, "text", "").strip()
         return jsonify({"response": ai_text})
     except Exception as e:
@@ -164,4 +147,5 @@ def chat():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.getenv("PORT", 5000)))
+    port = int(os.getenv("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
