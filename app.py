@@ -60,10 +60,10 @@ session_data = {}
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    data = request.json or {}
-    user_text = data.get('message', '').strip()
-    image_b64 = data.get('image')            # Base64 sin el header
-    image_type = data.get('image_type')      # p.ej. "image/png"
+    data       = request.json or {}
+    user_text  = data.get('message', '').strip()
+    image_b64  = data.get('image')       # Base64 puro (sin prefijo data:)
+    image_type = data.get('image_type')  # p.ej. "image/png"
 
     # Recuperar o crear session
     session_id = flask_session.get('session_id')
@@ -74,65 +74,65 @@ def chat():
         session_data[session_id] = {}
         logger.info(f"Nueva sesión {session_id}")
 
-    step = flask_session.get('step', 0)
+    step      = flask_session.get('step', 0)
     collected = session_data[session_id]
 
-    # Si llega imagen sin texto, la analizamos de inmediato
+    # Construir el array de inputs para generate_content
+    inputs = []
+
+    # Caso: solo imagen (sin texto) → análisis multimodal inmediato
     if image_b64 and not user_text:
-        # No guardamos en collected campos; tratamos como input multimodal directo
-        messages = [
-            {"author": "system", "content": get_system_instruction()},
-            {"author": "user", "image": {"data": image_b64, "mime_type": image_type}}
-        ]
-        # Podemos opcionalmente acompañar de prompt breve:
-        messages.append({"author": "user", "content": "Por favor, analiza esta imagen médica."})
+        inputs.append({
+            "image": {
+                "data": image_b64,
+                "mime_type": image_type
+            }
+        })
+        inputs.append({
+            "text": "Por favor, analiza esta imagen médica."
+        })
 
     else:
-        # Flujo de texto + preguntas sucesivas
-        # Primero, si hay texto nuevo y no es solo la imagen previa
-        if user_text:
-            # Si aún recopilamos campos, guardamos respuesta
-            if step < len(required_fields):
-                field = required_fields[step]
-                collected[field] = user_text
-                logger.info(f"Sesión {session_id}: guardado {field} = {user_text!r}")
-                flask_session['step'] = step + 1
-                step += 1
+        # Flujo de texto + recopilación de campos
+        if user_text and step < len(required_fields):
+            field = required_fields[step]
+            collected[field] = user_text
+            logger.info(f"Sesión {session_id}: guardado {field} = {user_text!r}")
+            step += 1
+            flask_session['step'] = step
 
-        # Si aún faltan campos, pedimos siguiente
         if step < len(required_fields):
+            # Preguntamos el siguiente campo
             next_field = required_fields[step]
             prompt = field_prompts[next_field].format(**collected)
-            messages = [
-                {"author": "system", "content": get_system_instruction()},
-                {"author": "user", "content": prompt}
-            ]
+            inputs.append({"text": get_system_instruction()})
+            inputs.append({"text": prompt})
+
         else:
-            # Todos los campos listos: construir análisis final
+            # Todos los datos listos → análisis final
             info = "\n".join(f"- {k}: {v}" for k, v in collected.items())
             final_prompt = (
                 "Gracias por la información. Con estos datos, analiza en profundidad los hallazgos "
                 "y sugiere posibles diagnósticos, hipótesis y recomendaciones.\n\n"
                 f"Información del paciente:\n{info}"
             )
-            messages = [
-                {"author": "system", "content": get_system_instruction()},
-                {"author": "user", "content": final_prompt}
-            ]
+            inputs.append({"text": get_system_instruction()})
+            inputs.append({"text": final_prompt})
+
             # Limpiar sesión para la próxima
             session_data.pop(session_id, None)
             flask_session.pop('session_id', None)
             flask_session.pop('step', None)
             logger.info(f"Sesión {session_id} completada y eliminada")
 
-    # Llamada multimodal al endpoint de chat de Gemini
+    # Llamada multimodal correcta
     try:
-        chat_model = genai.ChatModel("models/gemini-2.0-multimodal-preview")
-        resp = chat_model.generate(messages=messages)
-        ai_text = resp.choices[0].message.content.strip()
+        model = genai.GenerativeModel("models/gemini-2.0-multimodal-preview")
+        resp  = model.generate_content(inputs)
+        ai_text = getattr(resp, "text", "").strip()
         return jsonify({"response": ai_text})
     except Exception as e:
-        logger.error(f"Error en /api/chat: {e}", exc_info=True)
+        logger.error("Error en /api/chat:", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
