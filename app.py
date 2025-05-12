@@ -75,15 +75,10 @@ questions = {
 # Cache básico para respuestas repetidas
 @lru_cache(maxsize=100)
 def get_cached_response(full_prompt: str) -> str:
-    chat_resp = genai.chat.create(
-        model="chat-bison-001",  # Ajusta al modelo que prefieras
-        messages=[
-            { "author": "system", "content": SYSTEM_PROMPT },
-            { "author": "user",   "content": full_prompt   }
-        ]
-    )
-    # La respuesta viene en candidates[0].content
-    return chat_resp.candidates[0].content.strip()
+    model = genai.GenerativeModel("models/gemini-2.0-flash")
+    # Enviamos primero el SYSTEM_PROMPT y luego el full_prompt
+    response = model.generate_content([SYSTEM_PROMPT, full_prompt])
+    return getattr(response, "text", "").strip()
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
@@ -92,11 +87,13 @@ def chat():
     user_message = data.get('message', '').strip()
 
     if not session_id or session_id not in session_steps:
+        # Inicio de nueva sesión
         session_id = str(uuid.uuid4())
         session_steps[session_id] = 1
         session_data[session_id] = []
         prompt = questions[1]
     else:
+        # Continua sesión existente
         session_data[session_id].append(user_message)
         step = session_steps[session_id]
 
@@ -104,27 +101,31 @@ def chat():
             session_steps[session_id] += 1
             prompt = questions[step + 1]
         else:
+            # Ya recogimos todas las respuestas, validamos datos mínimos
             respuestas = dict(zip(questions.values(), session_data[session_id]))
-            edad = next((v for k, v in respuestas.items() if "Edad" in k), "")
-            sexo = next((v for k, v in respuestas.items() if "Sexo" in k), "")
-            motivo = next((v for k, v in respuestas.items() if "Motivo" in k), "")
+            edad   = next((v for k,v in respuestas.items() if "Edad" in k), "")
+            sexo   = next((v for k,v in respuestas.items() if "Sexo" in k), "")
+            motivo = next((v for k,v in respuestas.items() if "Motivo" in k), "")
 
-            if not edad.strip() or not sexo.strip() or not motivo.strip():
+            if not (edad.strip() and sexo.strip() and motivo.strip()):
                 return jsonify({
                     "session_id": session_id,
                     "response": "⚠️ Necesito edad, sexo y motivo de consulta para poder continuar. Por favor, verifica que hayas respondido esas preguntas."
                 })
 
+            # Construimos el informe final
             info = "\n".join(
                 f"{i+1}. {q}\n→ {a}"
-                for i, (q, a) in enumerate(zip(questions.values(), session_data[session_id]))
+                for i,(q,a) in enumerate(zip(questions.values(), session_data[session_id]))
             )
             prompt = (
-                f"Gracias. A continuación se presenta un informe clínico con base en la información suministrada.\n\n"
-                f"---\n\n📝 **Informe Clínico Detallado**\n\n📌 Datos Recopilados:\n{info}\n\n"
+                "Gracias. A continuación se presenta un informe clínico con base en la información suministrada.\n\n"
+                "---\n\n"
+                "📝 **Informe Clínico Detallado**\n\n"
+                "📌 Datos Recopilados:\n" + info + "\n\n"
                 "🔍 **Análisis Clínico**\n"
-                "Por favor, interpreta esta información desde el punto de vista médico y sugiere hipótesis diagnósticas posibles con base en evidencia científica, factores de riesgo, "
-                "y la presentación del caso. Finaliza con recomendaciones para el médico tratante."
+                "Por favor, interpreta esta información desde el punto de vista médico y sugiere hipótesis diagnósticas posibles "
+                "con base en evidencia científica, factores de riesgo, y la presentación del caso. Finaliza con recomendaciones para el médico tratante."
             )
 
     try:
