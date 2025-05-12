@@ -49,11 +49,11 @@ hipótesis diagnósticas basadas en evidencia científica.
 @app.route('/api/chat', methods=['POST'])
 def chat():
     data = request.json or {}
-    # Asegúrate de que tu cliente envíe el texto bajo "message" o "prompt"
+    # Lee el texto bajo "message" o, si usas otro campo, adapta aquí
     user_message = data.get('message', data.get('prompt', '')).strip()
     image_data   = data.get('image')
 
-    # 1) Inicializar la sesión la primera vez
+    # 1) Inicializar la sesión y devolver bienvenida **siempre** la primera vez
     if 'step' not in session:
         session['step'] = 1
         session['data'] = []
@@ -61,36 +61,35 @@ def chat():
         logger.info("Sesión nueva iniciada.")
         greeting = (
             "👋 ¡Hola! Soy tu asistente médico inteligente. "
-            "Te ayudaré a recopilar datos del paciente paso a paso. "
-            "Para comenzar, ¿puedes decirme el nombre completo del paciente?"
+            "Te ayudaré a recopilar datos del paciente paso a paso.\n\n"
+            "Para empezar, ¿me dices el nombre completo del paciente?"
         )
-        if not user_message and not image_data:
-            return jsonify(response=greeting)
+        return jsonify(response=greeting)
 
     step     = session['step']
     is_admin = session.get('admin', False)
     logger.info(f"[session] step={step}, admin={is_admin}, msg={user_message!r}")
 
-    # 2) Comando para activar modo admin
+    # 2) Activar modo admin
     if user_message.lower() == "admin":
         session['admin'] = True
         return jsonify(response="🔓 Modo Admin activado. Ahora puedes escribir libremente o subir imágenes.")
 
-    # 3) Si envían solo imagen, repetimos la misma pregunta
+    # 3) Si envían imagen sin texto, repetir la misma pregunta
     if image_data and not user_message:
         return jsonify(response=questions.get(step, questions[1]))
 
-    # 4) Validación sencilla: aceptamos cualquier texto no vacío (salvo modo admin)
+    # 4) Validación sencilla: sólo rechazamos texto vacío (modo admin ignora)
     def is_valid(text):
         if is_admin:
             return True
         return bool(text and text.strip())
 
-    # 5) Procesar respuesta de texto
+    # 5) Procesar respuesta textual
     if user_message:
         if not is_valid(user_message):
             return jsonify(response="😅 Ups, no entendí eso. ¿Podrías escribirlo de otra forma o con más detalle?")
-        # Guardar o actualizar la respuesta en la sesión
+        # Guardar o actualizar respuesta
         data_list = session['data']
         if len(data_list) < step:
             data_list.append(user_message)
@@ -98,26 +97,26 @@ def chat():
             data_list[step-1] = user_message
         session['data'] = data_list
 
-        # Avanzar al siguiente paso o marcar finalizado
+        # Avanzar o marcar finalizado
         if step < len(questions):
             session['step'] = step + 1
             return jsonify(response=questions[step+1])
         else:
             session['step'] = len(questions) + 1
 
-    # 6) Una vez respondidas todas (o si es admin), generamos el informe
+    # 6) Cuando todo está respondido (o en admin), generar el informe
     if session['step'] > len(questions) or is_admin:
         respuestas = {questions[i+1]: ans for i, ans in enumerate(session['data'])}
 
-        # Validar que al menos nombre, edad y sexo estén presentes
-        if (not is_admin and (
+        # Validar nombre, edad y sexo
+        if not is_admin and (
             not respuestas.get(questions[1]) or
             not respuestas.get(questions[2]) or
             not respuestas.get(questions[3])
-        )):
+        ):
             return jsonify(response="⚠️ Antes de continuar, necesito al menos el nombre, la edad y el sexo del paciente.")
 
-        # Construir prompt para Gemini
+        # Montar prompt para Gemini
         info = "\n".join(f"{idx}. {q}\n→ {a}"
                          for idx, (q, a) in enumerate(respuestas.items(), start=1))
         analysis_prompt = (
@@ -131,7 +130,7 @@ def chat():
             {"role": "user",   "parts": [analysis_prompt]}
         ]
 
-        # Adjuntar imagen si existe
+        # Adjuntar imagen si la hay
         if image_data:
             try:
                 img_bytes = base64.b64decode(image_data.split(',')[-1])
