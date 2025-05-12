@@ -94,13 +94,19 @@ def chat():
     if user_message:
         if is_valid_response(user_message):
             session_data[session_id].append(user_message)
+
             if step < len(questions):
                 session_steps[session_id] += 1
                 new_step = session_steps[session_id]
-                return jsonify({"session_id": session_id, "response": questions[new_step]})
+
+                if new_step <= len(questions):
+                    return jsonify({"session_id": session_id, "response": questions[new_step]})
+            else:
+                session_steps[session_id] += 1  # para permitir el análisis final
         else:
             return jsonify({"session_id": session_id, "response": "⚠️ Por favor, proporcione una respuesta válida."})
 
+    # Si ya se completaron todas las preguntas o está en modo admin, generar el análisis
     if session_steps[session_id] > len(questions) or is_admin:
         respuestas = dict(zip(questions.values(), session_data[session_id]))
         edad = next((v for k, v in respuestas.items() if "Edad" in k), "")
@@ -132,7 +138,7 @@ def chat():
             logger.error(f"Error en /api/chat: {e}", exc_info=True)
             return jsonify({"error": str(e)}), 500
 
-    # Fallback final por si nada más aplica
+    # Fallback final: repetir la pregunta actual
     return jsonify({"session_id": session_id, "response": questions[step]})
 
 if __name__ == '__main__':
