@@ -20,7 +20,7 @@ CORS(app)
 session_steps = {}
 session_data = {}
 
-# Prompt base para establecer comportamiento de la IA
+# Prompt base extendido (separado para usar como mensaje de sistema)
 SYSTEM_PROMPT = '''
 Eres una inteligencia artificial médica especializada en apoyar a médicos en la evaluación y comparación de diagnósticos. Tu objetivo es proporcionar análisis clínicos basados en la información suministrada por el profesional de la salud, para ayudar a confirmar, descartar o ampliar hipótesis diagnósticas. No estás autorizada para sustituir el juicio del médico, solo para complementarlo.
 
@@ -76,11 +76,12 @@ questions = {
 @lru_cache(maxsize=100)
 def get_cached_response(full_prompt):
     model = genai.GenerativeModel("models/gemini-2.0-flash")
-    # Fusionar SYSTEM_PROMPT con el prompt real del usuario
-    combined_prompt = f"{SYSTEM_PROMPT.strip()}\n\n{full_prompt.strip()}"
     response = model.generate_content([{
+        "role": "system",
+        "parts": [SYSTEM_PROMPT]
+    }, {
         "role": "user",
-        "parts": [combined_prompt]
+        "parts": [full_prompt]
     }])
     return getattr(response, 'text', '').strip()
 
@@ -103,10 +104,15 @@ def chat():
             session_steps[session_id] += 1
             prompt = questions[step + 1]
         else:
-            if len(session_data[session_id]) < 3:
+            respuestas = dict(zip(questions.values(), session_data[session_id]))
+            edad = next((v for k, v in respuestas.items() if "Edad" in k), "")
+            sexo = next((v for k, v in respuestas.items() if "Sexo" in k), "")
+            motivo = next((v for k, v in respuestas.items() if "Motivo" in k), "")
+
+            if not edad.strip() or not sexo.strip() or not motivo.strip():
                 return jsonify({
                     "session_id": session_id,
-                    "response": "⚠️ Faltan datos clínicos mínimos (edad, sexo o motivo de consulta). Por favor, proporciónalos antes de continuar."
+                    "response": "⚠️ Necesito edad, sexo y motivo de consulta para poder continuar. Por favor, verifica que hayas respondido esas preguntas."
                 })
 
             info = "\n".join(f"{i+1}. {q}\n→ {a}" for i, (q, a) in enumerate(zip(questions.values(), session_data[session_id])))
