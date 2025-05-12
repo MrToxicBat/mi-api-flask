@@ -61,44 +61,36 @@ def chat():
     data = request.json
     session_id = data.get('session_id')
     user_message = data.get('message', '').strip()
-    image_data = data.get('image')  # base64 opcional
+    image_data = data.get('image')
 
     if not session_id or session_id not in session_steps:
         session_id = str(uuid.uuid4())
         session_steps[session_id] = 1
         session_data[session_id] = []
-        return jsonify({
-            "session_id": session_id,
-            "response": questions[1]
-        })
+        return jsonify({"session_id": session_id, "response": questions[1]})
 
-    session_data[session_id].append(user_message)
     step = session_steps[session_id]
 
-    if step < len(questions):
-        session_steps[session_id] += 1
-        return jsonify({
-            "session_id": session_id,
-            "response": questions[step + 1]
-        })
-    else:
+    if image_data and not user_message:
+        return jsonify({"session_id": session_id, "response": questions[step]})
+
+    if user_message:
+        session_data[session_id].append(user_message)
+        if step < len(questions):
+            session_steps[session_id] += 1
+            return jsonify({"session_id": session_id, "response": questions[step + 1]})
+
+    if session_steps[session_id] > len(questions):
         respuestas = dict(zip(questions.values(), session_data[session_id]))
         edad = next((v for k, v in respuestas.items() if "Edad" in k), "")
         sexo = next((v for k, v in respuestas.items() if "Sexo" in k), "")
         motivo = next((v for k, v in respuestas.items() if "Motivo" in k), "")
 
         if not edad.strip() or not sexo.strip() or not motivo.strip():
-            return jsonify({
-                "session_id": session_id,
-                "response": "⚠️ Necesito edad, sexo y motivo de consulta para poder continuar. Por favor, verifica que hayas respondido esas preguntas."
-            })
+            return jsonify({"session_id": session_id, "response": "⚠️ Necesito edad, sexo y motivo de consulta para poder continuar. Por favor, verifica que hayas respondido esas preguntas."})
 
         info = "\n".join(f"{i+1}. {q}\n→ {a}" for i, (q, a) in enumerate(zip(questions.values(), session_data[session_id])))
-        analysis_prompt = (
-            f"Gracias. A continuación se presenta un informe clínico con base en la información suministrada.\n\n"
-            f"---\n\n📝 **Informe Clínico Detallado**\n\n📌 Datos Recopilados:\n{info}\n\n"
-            "🔍 **Análisis Clínico**\nPor favor, interpreta esta información desde el punto de vista médico y sugiere hipótesis diagnósticas posibles con base en evidencia científica, factores de riesgo, y la presentación del caso. Finaliza con recomendaciones para el médico tratante."
-        )
+        analysis_prompt = f"Gracias. A continuación se presenta un informe clínico con base en la información suministrada.\n\n---\n\n📝 **Informe Clínico Detallado**\n\n📌 Datos Recopilados:\n{info}\n\n🔍 **Análisis Clínico**\nPor favor, interpreta esta información desde el punto de vista médico y sugiere hipótesis diagnósticas posibles con base en evidencia científica, factores de riesgo, y la presentación del caso. Finaliza con recomendaciones para el médico tratante."
 
         parts = [
             {"role": "system", "parts": [SYSTEM_PROMPT]},
@@ -114,13 +106,12 @@ def chat():
 
         try:
             ai_response = get_cached_response(tuple(map(str, parts)))
-            return jsonify({
-                "session_id": session_id,
-                "response": ai_response
-            })
+            return jsonify({"session_id": session_id, "response": ai_response})
         except Exception as e:
             logger.error(f"Error en /api/chat: {e}", exc_info=True)
             return jsonify({"error": str(e)}), 500
+
+    return jsonify({"session_id": session_id, "response": questions[step]})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
