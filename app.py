@@ -21,7 +21,7 @@ CORS(app,
 # ——— Inicializar Gemini ———
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-# Modelo multimodal válido (detectado con /api/list-models)
+# Modelo multimodal válido
 MODEL_NAME = "models/gemini-2.0-flash"
 
 # ——— Flujo de preguntas ———
@@ -37,22 +37,22 @@ field_prompts = {
     "motivo_principal":
         "👋 Hola, doctor/a. ¿Cuál considera usted que es el motivo principal de consulta de este paciente?",
     "duracion_sintomas":
-        "Gracias. Me dice que el motivo es “{motivo_principal}”. ¿Cuánto tiempo lleva con esos síntomas?",
+        "⏳ Gracias. Me dice que el motivo es “{motivo_principal}”. ¿Cuánto tiempo lleva con esos síntomas?",
     "intensidad":
-        "Entendido. ¿Qué tan severos son esos síntomas (leve, moderado, severo)?",
+        "⚖️ Entendido. ¿Qué tan severos son esos síntomas (leve, moderado, severo)?",
     "edad":
-        "Perfecto. ¿Qué edad tiene el paciente?",
+        "🎂 Perfecto. ¿Qué edad tiene el paciente?",
     "sexo":
-        "Bien. ¿Cuál es el sexo asignado al nacer y el género actual?",
+        "🚻 Bien. ¿Cuál es el sexo asignado al nacer y el género actual?",
     "antecedentes_medicos":
-        "¿Antecedentes médicos relevantes (enfermedades previas, cirugías, alergias, medicación)?",
+        "📝 ¿Antecedentes médicos relevantes (enfermedades previas, cirugías, alergias, medicación)?",
 }
 
 def get_system_instruction():
     return (
-        "Eres una IA médica multimodal. "
-        "Primero analiza cualquier imagen médica que te envíen. "
-        "Solo después, recopila datos clínicos paso a paso y al final sugiere diagnósticos y recomendaciones."
+        "Eres una IA médica multimodal experta en interpretación de imágenes médicas. "
+        "Al recibir una imagen, realiza un análisis profundo y estructurado. "
+        "Luego, recopila datos clínicos paso a paso y al final sugiere diagnósticos y recomendaciones."
     )
 
 def build_summary(collected: dict) -> str:
@@ -60,21 +60,18 @@ def build_summary(collected: dict) -> str:
         return ""
     lines = [f"- **{k.replace('_',' ').capitalize()}**: {v}"
              for k, v in collected.items()]
-    return "Información recopilada hasta ahora:\n" + "\n".join(lines) + "\n\n"
+    return "📋 Información recopilada hasta ahora:\n" + "\n".join(lines) + "\n\n"
 
-# ——— Estado en memoria ———
-# session_data[sid] = {
-#   "fields": { ... },
-#   "image_analyzed": bool
-# }
+# Estado en memoria
+# session_data[sid] = { "fields": {...}, "image_analyzed": bool }
 session_data = {}
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
     data       = request.json or {}
     user_text  = data.get('message', '').strip()
-    image_b64  = data.get('image')       # Base64 puro
-    image_type = data.get('image_type')  # e.g. "image/png"
+    image_b64  = data.get('image')
+    image_type = data.get('image_type')
 
     # — Inicializar sesión si es nueva —
     sid = flask_session.get('session_id')
@@ -100,7 +97,17 @@ def chat():
             "mime_type": image_type,
             "data": image_b64
         })
-        prompt_text = "Por favor, analiza esta imagen médica y describe hallazgos relevantes."
+        # Nuevo prompt de análisis super detallado
+        prompt_text = (
+            "🖼️ **Análisis exhaustivo de imagen**:\n"
+            "1. 🔍 **Calidad técnica**: evalúa proyección, resolución, contraste y posibles artefactos.\n"
+            "2. 🧩 **Estructuras y morfología**: describe directamente la anatomía visible, contornos, simetría, densidades.\n"
+            "3. 📐 **Medidas y proporciones**: menciona dimensiones, relaciones anatómicas relevantes.\n"
+            "4. ⚠️ **Hallazgos patológicos**: destaca zonas anómalas (lesiones, masas, calcificaciones, edema).\n"
+            "5. 💡 **Hipótesis diagnóstica diferencial**: propone posibles causas ordenadas por probabilidad.\n"
+            "6. 📝 **Recomendaciones**: sugiere estudios adicionales o pasos clínicos siguientes.\n"
+            "Usa una respuesta bien seccionada, con emojis moderados para marcar apartados."
+        )
         state["image_analyzed"] = True
 
     else:
@@ -122,9 +129,12 @@ def chat():
             # — Análisis final —
             info_lines = "\n".join(f"- {k}: {v}" for k, v in collected.items())
             prompt_text = (
-                "Gracias por toda la información. Con estos datos, analiza en profundidad los hallazgos "
-                "y sugiere diagnósticos, hipótesis y recomendaciones.\n\n"
-                f"Información recopilada:\n{info_lines}"
+                "✅ Gracias por toda la información clínica.\n"
+                "Con estos datos, realiza un análisis detallado:\n"
+                "• 🔍 Hallazgos\n"
+                "• 💡 Hipótesis diagnóstica\n"
+                "• 📝 Recomendaciones\n\n"
+                f"📋 Información completa:\n{info_lines}"
             )
             # reset session
             session_data.pop(sid, None)
@@ -132,11 +142,10 @@ def chat():
             flask_session.pop('step', None)
             logger.info(f"Sesión {sid} completada")
 
-    # — Siempre añadimos el texto con la instrucción de sistema —
+    # — Construir prompt completo y llamar al modelo —
     full_text = f"{get_system_instruction()}\n\n{prompt_text}"
     parts.append({"text": full_text})
 
-    # — Llamada multimodal con la lista de parts —
     try:
         model = genai.GenerativeModel(MODEL_NAME)
         resp  = model.generate_content({"parts": parts})
