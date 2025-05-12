@@ -2,6 +2,7 @@ import os
 import uuid
 import logging
 import base64
+import re
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import google.generativeai as genai
@@ -74,11 +75,21 @@ def chat():
     if image_data and not user_message:
         return jsonify({"session_id": session_id, "response": questions[step]})
 
+    def is_valid_response(text):
+        if not text.strip():
+            return False
+        if step == 1:  # Edad
+            return bool(re.search(r'\d{1,3}', text))
+        return True
+
     if user_message:
-        session_data[session_id].append(user_message)
-        if step < len(questions):
-            session_steps[session_id] += 1
-            return jsonify({"session_id": session_id, "response": questions[step + 1]})
+        if is_valid_response(user_message):
+            session_data[session_id].append(user_message)
+            if step < len(questions):
+                session_steps[session_id] += 1
+                return jsonify({"session_id": session_id, "response": questions[step + 1]})
+        else:
+            return jsonify({"session_id": session_id, "response": "⚠️ Por favor, proporcione una respuesta válida."})
 
     if session_steps[session_id] > len(questions):
         respuestas = dict(zip(questions.values(), session_data[session_id]))
