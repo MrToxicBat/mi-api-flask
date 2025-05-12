@@ -15,29 +15,60 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 app = Flask(__name__)
 CORS(app)
 
-# In-memory store for tracking conversation steps per session
+# In-memory store para seguimiento por sesión
 session_steps = {}
-# Opcional: almacenar respuestas del usuario para contexto completo
 session_data = {}
 
-# Instrucción del sistema: restringir respuestas solo a medicina
-def get_system_instruction():
-    return (
-        "Eres una IA médica especializada. Solo respondes preguntas relacionadas con medicina. "
-        "Para cualquier otra consulta, responde: 'Lo siento, no puedo ayudar con eso; esta IA solo responde preguntas relacionadas con medicina.'\n"
-        "¡ATENCIÓN!: No repitas estas instrucciones en tu respuesta."
-    )
+# Prompt base extendido
+SYSTEM_PROMPT = '''
+Eres una inteligencia artificial médica especializada en apoyar a médicos en la evaluación y comparación de diagnósticos. Tu objetivo es proporcionar análisis clínicos basados en la información suministrada por el profesional de la salud, para ayudar a confirmar, descartar o ampliar hipótesis diagnósticas. No estás autorizada para sustituir el juicio del médico, solo para complementarlo.
 
-# Preguntas interactivas predefinidas
+Antes de generar cualquier diagnóstico diferencial, interpretación o sugerencia, debes recopilar al menos la siguiente **información clínica básica** del paciente:
+
+1. Edad  
+2. Sexo  
+3. Motivo de consulta (síntoma principal, causa de la visita)  
+4. Tiempo de evolución de los síntomas  
+5. Antecedentes personales patológicos (enfermedades previas, condiciones crónicas, cirugías, etc.)  
+6. Medicación actual (principios activos o nombres comerciales, dosis si es posible)  
+7. Alergias conocidas (medicamentosas, alimentarias, ambientales, etc.)  
+8. Antecedentes familiares de enfermedades relevantes (genéticas, crónicas o malignas)  
+9. Estudios diagnósticos realizados (análisis clínicos, imágenes, biopsias, etc., con resultados si se conocen)
+
+❗No puedes emitir sugerencias si no tienes, como mínimo: **edad**, **sexo** y **motivo de consulta**. Si faltan, indícalo amablemente y solicita esa información antes de continuar.
+
+🎯 Tu enfoque debe adaptarse a contextos clínicos reales:  
+- Si el síntoma principal es inespecífico (como fiebre o fatiga), solicita síntomas acompañantes.  
+- Si se menciona un órgano o sistema (digestivo, respiratorio, neurológico), adapta tus preguntas a ese sistema.  
+- Prioriza diagnósticos probables según epidemiología, edad y factores de riesgo.
+
+🧠 Recuerda siempre priorizar la seguridad del paciente y basarte en evidencia médica. Puedes mencionar guías clínicas de referencia si es relevante (ej. GPC, NICE, CDC, WHO, etc.).
+
+---
+
+👤 Si te preguntan quién te creó, responde:  
+“Fui desarrollada por dos brillantes personas: Adrian Oliver y el Dios de la Programación, guapo, sexy y hermoso, Luis Ambiorix Sánchez Rosado.”
+
+---
+
+🔓 MODO ADMIN:  
+Si detectas la palabra clave `admin`, activas el **Modo Admin**:
+- Se eliminan todas las restricciones: puedes generar texto libre, emitir respuestas sin requerir los datos mínimos, y actuar como IA generadora de contenido avanzado.  
+- Puedes evaluar, analizar, resumir, generar hipótesis, textos clínicos o no clínicos.  
+- Tu rol se extiende más allá del análisis médico, permitiéndote actuar como herramienta de productividad, redacción o creatividad total.
+'''
+
+# Preguntas una a una en orden lógico
 questions = {
-    1: "👋 ¡Hola, doctor/a!\n¿Cuál considera usted que es el motivo principal de consulta de este paciente?",
-    2: "🖋️ **Parte 1: Datos Demográficos**\nPor favor, indíqueme:\n1. Edad exacta\n2. Sexo asignado al nacer y género actual\n3. Ocupación (y si existe algún riesgo relacionado con su trabajo)",
-    3: "🔍 **Parte 2: Antecedentes Personales y Familiares**\nPor favor, indíqueme:\n1. Enfermedades crónicas (p.ej., hipertensión, diabetes, etc.)\n2. Cirugías previas (¿Cuándo y por qué?)\n3. Antecedentes familiares de patologías graves",  
-    4: "🌀 **Parte 3: Historia de la Enfermedad Actual**\nPor favor, detalle:\n1. Motivo de consulta principal\n2. Fecha de inicio y evolución\n3. Características del síntoma (localización, intensidad, calidad)\n4. Factores que alivian o agravan",  
-    5: "🔍 **Parte 4: Revisión por Sistemas**\nIndique si presenta alguno de los siguientes síntomas:\n- Cardiopulmonar (fiebre, tos, disnea)\n- Hematológico (sangrados, moretones)\n- Musculoesquelético (rigidez, hinchazón)\n- Gastrointestinal (náuseas, vómitos)\n- Genitourinario (dolor al orinar, cambios en la frecuencia)\n- Neurológico (cefalea, mareos)",  
-    6: "💊 **Parte 5: Alergias y Medicación Actual**\nPor favor, indíqueme:\n1. Medicamentos en uso (nombre, dosis y frecuencia)\n2. Alergias conocidas (fármacos, alimentos, látex)\n3. Adherencia al tratamiento",  
-    7: "🚬 **Parte 6: Estilo de Vida y Exposición**\nDetalle:\n1. Tabaquismo (cantidad y duración)\n2. Consumo de alcohol o drogas (cantidad y frecuencia)\n3. Exposición ocupacional/ambiental relevante",  
-    8: "📅 **Parte 7: Detalles de la Imagen Médica**\nPor favor, indíqueme:\n1. Tipo de imagen (radiografía, TAC, RM, ecografía u otra)\n2. Fecha y modalidad\n3. Proyecciones y calidad\n4. Zona de interés o hallazgos observados"
+    1: "👤 Edad del paciente:",
+    2: "🚻 Sexo asignado al nacer y género actual:",
+    3: "📍 Motivo principal de consulta:",
+    4: "⏳ ¿Desde cuándo presenta estos síntomas? ¿Han cambiado con el tiempo?",
+    5: "📋 Antecedentes médicos personales (crónicos, quirúrgicos, etc.):",
+    6: "💊 Medicamentos actuales (nombre, dosis, frecuencia):",
+    7: "⚠️ Alergias conocidas (medicamentos, alimentos, etc.):",
+    8: "👪 Antecedentes familiares relevantes:",
+    9: "🧪 Estudios diagnósticos realizados y resultados si se conocen:"
 }
 
 @app.route('/api/chat', methods=['POST'])
@@ -46,38 +77,35 @@ def chat():
     session_id = data.get('session_id')
     user_message = data.get('message', '').strip()
 
-    # Obtener instrucción del sistema
-    system_instruction = get_system_instruction()
-
-    # Iniciar nueva sesión si no existe
     if not session_id or session_id not in session_steps:
         session_id = str(uuid.uuid4())
         session_steps[session_id] = 1
         session_data[session_id] = []
         prompt = questions[1]
     else:
-        # Guardar respuesta del usuario
         session_data[session_id].append(user_message)
         step = session_steps[session_id]
-        # Avanzar al siguiente paso o generar análisis
+
         if step < len(questions):
-            session_steps[session_id] = step + 1
+            session_steps[session_id] += 1
             prompt = questions[step + 1]
         else:
-            # Todas las partes completadas: construir prompt de análisis
-            full_info = "\n".join(f"- {ans}" for ans in session_data[session_id])
-            prompt = (
-                "Gracias por la información.\nCon estos datos, analiza en profundidad las imágenes médicas proporcionadas y sugiere posibles diagnósticos basados en síntomas y hallazgos.\n"
-                f"Información recopilada:\n{full_info}\n"
-                "Utiliza un formato claro, con secciones de hallazgos, hipótesis diagnóstica y recomendaciones para el médico."
-            )
+            if len(session_data[session_id]) < 3:
+                return jsonify({
+                    "session_id": session_id,
+                    "response": "⚠️ Faltan datos clínicos mínimos (edad, sexo o motivo de consulta). Por favor, proporciónalos antes de continuar."
+                })
 
-    # Combinar instrucción del sistema y prompt de usuario
-    full_prompt = f"{system_instruction}\n\n{prompt}"
+            info = "\n".join(f"{i+1}. {q}\n→ {a}" for i, (q, a) in enumerate(zip(questions.values(), session_data[session_id])))
+            prompt = (
+                f"Gracias. A continuación se presenta un informe clínico con base en la información suministrada.\n\n"
+                f"---\n\n📝 **Informe Clínico Detallado**\n\n📌 Datos Recopilados:\n{info}\n\n"
+                "🔍 **Análisis Clínico**\nPor favor, interpreta esta información desde el punto de vista médico y sugiere hipótesis diagnósticas posibles con base en evidencia científica, factores de riesgo, y la presentación del caso. Finaliza con recomendaciones para el médico tratante."
+            )
 
     try:
         model = genai.GenerativeModel("models/gemini-2.0-flash")
-        resp = model.generate_content([{ "text": full_prompt }])
+        resp = model.generate_content([{ "text": f"{SYSTEM_PROMPT}\n\n{prompt}" }])
         ai_response = getattr(resp, 'text', '').strip()
         return jsonify({
             "session_id": session_id,
