@@ -1,4 +1,4 @@
-import logging
+¿import logging
 import os
 import base64
 import uuid
@@ -42,9 +42,25 @@ questions = {
     9: "Estudios diagnósticos realizados y resultados si se conocen:"
 }
 
-SYSTEM_PROMPT = """Eres un asistente médico inteligente que ayuda con el análisis de casos clínicos.
-Tu función es interpretar la información médica proporcionada y ofrecer análisis preliminares.
-Basa tus respuestas en evidencia científica y conocimiento médico actualizado."""
+SYSTEM_PROMPT = """Eres un asistente médico inteligente cuyo objetivo es recopilar información clínica básica de forma estructurada y ordenada.
+
+Instrucciones:
+1. Formula **solo una vez** cada una de las siguientes preguntas en este orden:
+   1) Edad del paciente  
+   2) Sexo asignado al nacer y género actual  
+   3) Motivo principal de consulta  
+   4) ¿Desde cuándo presenta estos síntomas?  
+   5) Antecedentes médicos personales  
+   6) Medicamentos actuales  
+   7) Alergias conocidas  
+   8) Antecedentes familiares relevantes  
+   9) Estudios diagnósticos realizados  
+
+2. No repitas una pregunta que ya tenga respuesta válida.  
+3. Si la respuesta no cumple el formato mínimo (p. ej. edad sin números, sexo sin identificador, etc.), pide aclaración de esa misma pregunta.  
+4. Solo tras haber recibido respuestas válidas a las 9 preguntas, genera un **Informe Clínico** con análisis y posibles diagnósticos diferenciales basados en evidencia científica.
+
+Mantén un tono profesional y claro, y recuerda que tu función es asistir, no sustituir al médico."""
 
 # ─── Endpoint /api/chat ─────────────────────────────────────────────────────────
 @app.route('/api/chat', methods=['POST'])
