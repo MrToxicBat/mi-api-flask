@@ -36,8 +36,7 @@ Antes de generar cualquier diagnóstico diferencial, interpretación o sugerenci
 7. Alergias conocidas (medicamentosas, alimentarias, ambientales, etc.)  
 8. Antecedentes familiares de enfermedades relevantes (genéticas, crónicas o malignas)  
 9. Estudios diagnósticos realizados (análisis clínicos, imágenes, biopsias, etc., con resultados si se conocen)
-
-
+'''
 
 questions = {
     1: "👤 Edad del paciente:",
