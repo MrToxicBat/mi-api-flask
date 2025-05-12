@@ -20,7 +20,7 @@ CORS(app)
 session_steps = {}
 session_data = {}
 
-# Prompt base extendido (separado para usar como mensaje de sistema)
+# Prompt base para establecer comportamiento de la IA
 SYSTEM_PROMPT = '''
 Eres una inteligencia artificial médica especializada en apoyar a médicos en la evaluación y comparación de diagnósticos. Tu objetivo es proporcionar análisis clínicos basados en la información suministrada por el profesional de la salud, para ayudar a confirmar, descartar o ampliar hipótesis diagnósticas. No estás autorizada para sustituir el juicio del médico, solo para complementarlo.
 
@@ -76,12 +76,11 @@ questions = {
 @lru_cache(maxsize=100)
 def get_cached_response(full_prompt):
     model = genai.GenerativeModel("models/gemini-2.0-flash")
+    # Fusionar SYSTEM_PROMPT con el prompt real del usuario
+    combined_prompt = f"{SYSTEM_PROMPT.strip()}\n\n{full_prompt.strip()}"
     response = model.generate_content([{
-        "role": "system",
-        "parts": [SYSTEM_PROMPT]
-    }, {
         "role": "user",
-        "parts": [full_prompt]
+        "parts": [combined_prompt]
     }])
     return getattr(response, 'text', '').strip()
 
