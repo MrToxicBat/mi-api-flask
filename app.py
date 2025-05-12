@@ -20,6 +20,7 @@ CORS(app)
 
 session_steps = {}
 session_data = {}
+session_admin = {}
 
 SYSTEM_PROMPT = '''
 Eres una inteligencia artificial médica especializada en apoyar a médicos en la evaluación y comparación de diagnósticos. Tu objetivo es proporcionar análisis clínicos basados en la información suministrada por el profesional de la salud, para ayudar a confirmar, descartar o ampliar hipótesis diagnósticas. No estás autorizada para sustituir el juicio del médico, solo para complementarlo.
@@ -68,19 +69,27 @@ def chat():
         session_id = str(uuid.uuid4())
         session_steps[session_id] = 1
         session_data[session_id] = []
+        session_admin[session_id] = False
         return jsonify({"session_id": session_id, "response": questions[1]})
 
     step = session_steps[session_id]
+    is_admin = session_admin.get(session_id, False)
+
+    if user_message.lower() == "admin":
+        session_admin[session_id] = True
+        return jsonify({"session_id": session_id, "response": "🔓 Modo Admin activado. Ahora puedes escribir libremente o subir imágenes."})
 
     if image_data and not user_message:
         return jsonify({"session_id": session_id, "response": questions[step]})
 
     def is_valid_response(text):
+        if is_admin:
+            return True
         if not text.strip():
             return False
-        if step == 1:  # Edad
+        if step == 1:
             return bool(re.search(r'\d{1,3}', text))
-        if step == 2:  # Sexo
+        if step == 2:
             return any(g in text.lower() for g in ["masculino", "femenino", "m", "f", "hombre", "mujer"])
         return True
 
@@ -93,13 +102,13 @@ def chat():
         else:
             return jsonify({"session_id": session_id, "response": "⚠️ Por favor, proporcione una respuesta válida."})
 
-    if session_steps[session_id] > len(questions):
+    if session_steps[session_id] > len(questions) or is_admin:
         respuestas = dict(zip(questions.values(), session_data[session_id]))
         edad = next((v for k, v in respuestas.items() if "Edad" in k), "")
         sexo = next((v for k, v in respuestas.items() if "Sexo" in k), "")
         motivo = next((v for k, v in respuestas.items() if "Motivo" in k), "")
 
-        if not edad.strip() or not sexo.strip() or not motivo.strip():
+        if not is_admin and (not edad.strip() or not sexo.strip() or not motivo.strip()):
             return jsonify({"session_id": session_id, "response": "⚠️ Necesito edad, sexo y motivo de consulta para poder continuar. Por favor, verifica que hayas respondido esas preguntas."})
 
         info = "\n".join(f"{i+1}. {q}\n→ {a}" for i, (q, a) in enumerate(zip(questions.values(), session_data[session_id])))
