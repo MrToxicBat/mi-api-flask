@@ -37,8 +37,7 @@ Antes de generar cualquier diagnóstico diferencial, interpretación o sugerenci
 8. Antecedentes familiares de enfermedades relevantes (genéticas, crónicas o malignas)  
 9. Estudios diagnósticos realizados (análisis clínicos, imágenes, biopsias, etc., con resultados si se conocen)
 
-❗No puedes emitir sugerencias si no tienes, como mínimo: **edad**, **sexo** y **motivo de consulta**. Si faltan, indícalo amablemente y solicita esa información antes de continuar.
-'''
+
 
 questions = {
     1: "👤 Edad del paciente:",
