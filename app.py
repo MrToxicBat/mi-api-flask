@@ -74,16 +74,16 @@ questions = {
 
 # Cache básico para respuestas repetidas
 @lru_cache(maxsize=100)
-def get_cached_response(full_prompt):
-    model = genai.GenerativeModel("models/gemini-2.0-flash")
-    response = model.generate_content([{
-        "role": "system",
-        "parts": [SYSTEM_PROMPT]
-    }, {
-        "role": "user",
-        "parts": [full_prompt]
-    }])
-    return getattr(response, 'text', '').strip()
+def get_cached_response(full_prompt: str) -> str:
+    chat_resp = genai.chat.create(
+        model="chat-bison-001",  # Ajusta al modelo que prefieras
+        messages=[
+            { "author": "system", "content": SYSTEM_PROMPT },
+            { "author": "user",   "content": full_prompt   }
+        ]
+    )
+    # La respuesta viene en candidates[0].content
+    return chat_resp.candidates[0].content.strip()
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
@@ -115,11 +115,16 @@ def chat():
                     "response": "⚠️ Necesito edad, sexo y motivo de consulta para poder continuar. Por favor, verifica que hayas respondido esas preguntas."
                 })
 
-            info = "\n".join(f"{i+1}. {q}\n→ {a}" for i, (q, a) in enumerate(zip(questions.values(), session_data[session_id])))
+            info = "\n".join(
+                f"{i+1}. {q}\n→ {a}"
+                for i, (q, a) in enumerate(zip(questions.values(), session_data[session_id]))
+            )
             prompt = (
                 f"Gracias. A continuación se presenta un informe clínico con base en la información suministrada.\n\n"
                 f"---\n\n📝 **Informe Clínico Detallado**\n\n📌 Datos Recopilados:\n{info}\n\n"
-                "🔍 **Análisis Clínico**\nPor favor, interpreta esta información desde el punto de vista médico y sugiere hipótesis diagnósticas posibles con base en evidencia científica, factores de riesgo, y la presentación del caso. Finaliza con recomendaciones para el médico tratante."
+                "🔍 **Análisis Clínico**\n"
+                "Por favor, interpreta esta información desde el punto de vista médico y sugiere hipótesis diagnósticas posibles con base en evidencia científica, factores de riesgo, "
+                "y la presentación del caso. Finaliza con recomendaciones para el médico tratante."
             )
 
     try:
