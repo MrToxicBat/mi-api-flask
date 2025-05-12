@@ -96,7 +96,8 @@ def chat():
             session_data[session_id].append(user_message)
             if step < len(questions):
                 session_steps[session_id] += 1
-                return jsonify({"session_id": session_id, "response": questions[step + 1]})
+                new_step = session_steps[session_id]
+                return jsonify({"session_id": session_id, "response": questions[new_step]})
         else:
             return jsonify({"session_id": session_id, "response": "⚠️ Por favor, proporcione una respuesta válida."})
 
@@ -131,6 +132,7 @@ def chat():
             logger.error(f"Error en /api/chat: {e}", exc_info=True)
             return jsonify({"error": str(e)}), 500
 
+    # Fallback final por si nada más aplica
     return jsonify({"session_id": session_id, "response": questions[step]})
 
 if __name__ == '__main__':
