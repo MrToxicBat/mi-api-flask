@@ -80,6 +80,8 @@ def chat():
             return False
         if step == 1:  # Edad
             return bool(re.search(r'\d{1,3}', text))
+        if step == 2:  # Sexo
+            return any(g in text.lower() for g in ["masculino", "femenino", "m", "f", "hombre", "mujer"])
         return True
 
     if user_message:
