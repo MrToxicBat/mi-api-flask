@@ -16,10 +16,16 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config.update({
     "SECRET_KEY": os.getenv("SECRET_KEY", str(uuid.uuid4())),
-    "SESSION_TYPE": "filesystem",   # Persiste en archivos dentro de tu contenedor
-    "SESSION_FILE_DIR": "./.flask_session/",  
+    "SESSION_TYPE": "filesystem",       # Persiste en archivos dentro de tu contenedor
+    "SESSION_FILE_DIR": "./.flask_session/",
     "SESSION_PERMANENT": False,
+    "SESSION_COOKIE_NAME": "session"    # Nombre de la cookie de sesión
 })
+
+# ── Parche para que Flask-Session no falle en Flask recientes ───────────────────
+# Flask-Session busca `app.session_cookie_name`, que ya no existe por defecto.
+app.session_cookie_name = app.config.get("SESSION_COOKIE_NAME", "session")
+
 Session(app)
 CORS(app)
 
@@ -102,20 +108,24 @@ def chat():
 
     # Si completó o está en admin, generar análisis
     if session['step'] > len(questions) or is_admin:
-        respuestas = {questions[i+1]: ans 
-                      for i, ans in enumerate(session['data'])}
+        respuestas = {
+            questions[i+1]: ans
+            for i, ans in enumerate(session['data'])
+        }
 
         # Validar datos esenciales
-        if not is_admin and (not respuestas.get(questions[1]) 
-                             or not respuestas.get(questions[2]) 
-                             or not respuestas.get(questions[3])):
+        if (not is_admin and (
+            not respuestas.get(questions[1]) or
+            not respuestas.get(questions[2]) or
+            not respuestas.get(questions[3])
+        )):
             return jsonify(response="⚠️ Necesito edad, sexo y motivo de consulta antes de continuar.")
 
         # Construir prompt
         info = "\n".join(f"{idx}. {q}\n→ {a}"
                          for idx, (q,a) in enumerate(respuestas.items(), start=1))
         analysis_prompt = (
-            "📝 **Informe Clínico**\n\n" 
+            "📝 **Informe Clínico**\n\n"
             + info +
             "\n\n🔍 **Análisis**\nInterpreta estos datos y sugiere hipótesis diagnósticas con base en evidencia."
         )
@@ -124,6 +134,7 @@ def chat():
             {"role": "system", "parts": [SYSTEM_PROMPT]},
             {"role": "user",   "parts": [analysis_prompt]}
         ]
+
         # Adjuntar imagen si la hay
         if image_data:
             try:
@@ -131,7 +142,7 @@ def chat():
                 parts[1]["parts"].append({
                     "inline_data": {"mime_type": "image/png", "data": img_bytes}
                 })
-            except:
+            except Exception:
                 logger.warning("No se pudo decodificar imagen.", exc_info=True)
 
         # Llamar a Gemini
@@ -142,7 +153,7 @@ def chat():
             if not text:
                 text = "🤖 **Análisis preliminar**: no hubo respuesta del modelo."
             return jsonify(response=text)
-        except Exception as e:
+        except Exception:
             logger.error("Error generando análisis:", exc_info=True)
             return jsonify(response="❌ Error interno al generar análisis."), 500
 
