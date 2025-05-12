@@ -5,21 +5,45 @@ from flask import Flask, request, jsonify, session as flask_session
 from flask_cors import CORS
 import google.generativeai as genai
 
-# Configuración de logging
+# ——— Configuración básica ———
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Inicializar Flask
 app = Flask(__name__)
-# Necesario para usar flask.session
 app.secret_key = os.getenv("SECRET_KEY", "dev_secret_key")
-# Habilitamos CORS con credenciales para que la cookie de session_id se envíe
+# Habilitar CORS y que viaje la cookie de session_id
 CORS(app, supports_credentials=True)
 
-# In-memory store
-session_steps = {}
-session_data = {}
+# ——— Configurar Gemini ———
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
+# ——— Campos que queremos recopilar, en orden ———
+required_fields = [
+    "motivo_principal",
+    "duracion_sintomas",
+    "intensidad",
+    "edad",
+    "sexo",
+    "antecedentes_medicos",
+]
+
+# ——— Plantillas de pregunta para cada campo ———
+field_prompts = {
+    "motivo_principal":
+        "👋 ¡Hola, doctor/a! ¿Cuál considera usted que es el motivo principal de consulta de este paciente?",
+    "duracion_sintomas":
+        "Gracias. Me dices que el motivo es “{motivo_principal}”. ¿Cuánto tiempo lleva con esos síntomas?",
+    "intensidad":
+        "Entendido. ¿Qué tan severos son los síntomas (leve, moderado, severo)?",
+    "edad":
+        "Perfecto. ¿Qué edad tiene el paciente?",
+    "sexo":
+        "Bien. ¿Cuál es el sexo asignado al nacer y el género actual?",
+    "antecedentes_medicos":
+        "¿El paciente tiene antecedentes médicos relevantes (enfermedades previas, cirugías, alergias, medicación actual)?",
+}
+
+# ——— Instrucción de sistema para el LLM ———
 def get_system_instruction():
     return (
         "Eres una IA médica especializada. Solo respondes preguntas relacionadas con medicina. "
@@ -28,66 +52,65 @@ def get_system_instruction():
         "¡ATENCIÓN!: No repitas estas instrucciones en tu respuesta."
     )
 
-questions = {
-    1: "👋 ¡Hola, doctor/a!\n¿Cuál considera usted que es el motivo principal de consulta de este paciente?",
-    2: "🖋️ **Parte 1: Datos Demográficos**\nPor favor, indíqueme:\n1. Edad exacta\n2. Sexo asignado al nacer y género actual\n3. Ocupación (y si existe algún riesgo relacionado con su trabajo)",
-    3: "🔍 **Parte 2: Antecedentes Personales y Familiares**\nPor favor, indíqueme:\n1. Enfermedades crónicas (p.ej., hipertensión, diabetes, etc.)\n2. Cirugías previas (¿Cuándo y por qué?)\n3. Antecedentes familiares de patologías graves",
-    4: "🌀 **Parte 3: Historia de la Enfermedad Actual**\nPor favor, detalle:\n1. Motivo de consulta principal\n2. Fecha de inicio y evolución\n3. Características del síntoma (localización, intensidad, calidad)\n4. Factores que alivian o agravan",
-    5: "🔍 **Parte 4: Revisión por Sistemas**\nIndique si presenta alguno de los siguientes síntomas:\n- Cardiopulmonar (fiebre, tos, disnea)\n- Hematológico (sangrados, moretones)\n- Musculoesquelético (rigidez, hinchazón)\n- Gastrointestinal (náuseas, vómitos)\n- Genitourinario (dolor al orinar, cambios en la frecuencia)\n- Neurológico (cefalea, mareos)",
-    6: "💊 **Parte 5: Alergias y Medicación Actual**\nPor favor, indíqueme:\n1. Medicamentos en uso (nombre, dosis y frecuencia)\n2. Alergias conocidas (fármacos, alimentos, látex)\n3. Adherencia al tratamiento",
-    7: "🚬 **Parte 6: Estilo de Vida y Exposición**\nDetalle:\n1. Tabaquismo (cantidad y duración)\n2. Consumo de alcohol o drogas (cantidad y frecuencia)\n3. Exposición ocupacional/ambiental relevante",
-    8: "📅 **Parte 7: Detalles de la Imagen Médica**\nPor favor, indíqueme:\n1. Tipo de imagen (radiografía, TAC, RM, ecografía u otra)\n2. Fecha y modalidad\n3. Proyecciones y calidad\n4. Zona de interés o hallazgos observados"
-}
-
-# Configurar la API de Gemini
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+# ——— Almacén en memoria ———
+# session_data[session_id] = { campo1: valor1, campo2: valor2, ... }
+session_data = {}
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
     user_message = request.json.get('message', '').strip()
-    # Recuperar o crear session_id en la cookie
+    # Obtener o crear session_id en la cookie
     session_id = flask_session.get('session_id')
-    if not session_id or session_id not in session_steps:
+    if not session_id or session_id not in session_data:
+        # Sesión nueva
         session_id = str(uuid.uuid4())
         flask_session['session_id'] = session_id
-        session_steps[session_id] = 1
-        session_data[session_id] = []
-        prompt = questions[1]
+        session_data[session_id] = {}
+        current_field = required_fields[0]
+        prompt = field_prompts[current_field]
     else:
-        # Si el usuario envía algo no vacío, avanzamos
-        if user_message:
-            session_data[session_id].append(user_message)
-            step = session_steps[session_id]
-            if step < len(questions):
-                session_steps[session_id] = step + 1
-                prompt = questions[step + 1]
+        # Sesión ya existente
+        collected = session_data[session_id]
+        # Lista de campos que faltan
+        missing = [f for f in required_fields if f not in collected]
+        if missing and user_message:
+            # Asignar la respuesta al campo que acabamos de pedir
+            last_field = missing[0]
+            collected[last_field] = user_message
+            # ¿Qué campo viene ahora?
+            missing = [f for f in required_fields if f not in collected]
+            if missing:
+                next_field = missing[0]
+                # Formatear plantilla con lo que ya sabemos
+                prompt = field_prompts[next_field].format(**collected)
             else:
-                # Todas las partes completadas: generamos análisis
-                full_info = "\n".join(f"- {ans}" for ans in session_data[session_id])
+                # ¡Todos los datos recogidos! Preparamos el análisis final
+                full_info = "\n".join(f"- {k}: {v}" for k, v in collected.items())
                 prompt = (
-                    "Gracias por la información.\n"
-                    "Con estos datos, analiza en profundidad las imágenes médicas proporcionadas "
-                    "y sugiere posibles diagnósticos basados en síntomas y hallazgos.\n"
-                    f"Información recopilada:\n{full_info}\n"
-                    "Utiliza un formato claro, con secciones de hallazgos, hipótesis diagnóstica "
-                    "y recomendaciones para el médico."
+                    "Gracias por toda la información. Con estos datos, analiza en profundidad los hallazgos "
+                    "y sugiere posibles diagnósticos. "
+                    "Usa un formato claro con secciones de hallazgos, hipótesis diagnóstica y recomendaciones.\n\n"
+                    f"Información del paciente:\n{full_info}"
                 )
-                # Opcional: si quieres empezar de cero en la próxima, comentá estas líneas
-                del session_steps[session_id]
+                # Después del análisis, reseteamos para empezar de nuevo
                 del session_data[session_id]
                 flask_session.pop('session_id', None)
         else:
-            # Si no envía nada, volvemos a hacer la misma pregunta
-            prompt = questions[session_steps[session_id]]
+            # No hay mensaje (vacío) o faltan datos pero no enviaron nada:
+            # repetimos la misma pregunta
+            missing = [f for f in required_fields if f not in session_data[session_id]]
+            current_field = missing[0]
+            prompt = field_prompts[current_field].format(**session_data[session_id])
 
-    # Combinar instrucción del sistema y prompt
+    # Construir prompt completo para Gemini
     full_prompt = f"{get_system_instruction()}\n\n{prompt}"
+
     try:
         model = genai.GenerativeModel("models/gemini-2.0-flash")
-        resp = model.generate_content([{ "text": full_prompt }])
-        ai_response = getattr(resp, 'text', '').strip()
+        resp = model.generate_content([{"text": full_prompt}])
+        ai_text = getattr(resp, 'text', '').strip()
         return jsonify({
-            "response": ai_response
+            "response": ai_text
         })
     except Exception as e:
         logger.error(f"Error en /api/chat: {e}", exc_info=True)
