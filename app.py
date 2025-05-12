@@ -1,24 +1,29 @@
 import logging
-import uuid
-import re  # Añadido el import faltante
 import os
 import base64
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+import uuid
+import re
 
-# Importación de Google AI
+from flask import Flask, request, jsonify, session
+from flask_cors import CORS
+from flask_session import Session
 import google.generativeai as genai
 
+# ─── Configuración básica ───────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+app.config.update({
+    "SECRET_KEY": os.getenv("SECRET_KEY", str(uuid.uuid4())),
+    "SESSION_TYPE": "filesystem",   # Persiste en archivos dentro de tu contenedor
+    "SESSION_FILE_DIR": "./.flask_session/",  
+    "SESSION_PERMANENT": False,
+})
+Session(app)
 CORS(app)
 
-session_steps = {}
-session_data = {}
-session_admin = {}
-
+# ─── Cuestionario ───────────────────────────────────────────────────────────────
 questions = {
     1: "Edad del paciente:",
     2: "Sexo asignado al nacer y género actual:",
@@ -31,140 +36,119 @@ questions = {
     9: "Estudios diagnósticos realizados y resultados si se conocen:"
 }
 
-# Definición del prompt del sistema (reemplaza con tu prompt real)
 SYSTEM_PROMPT = """Eres un asistente médico inteligente que ayuda con el análisis de casos clínicos.
 Tu función es interpretar la información médica proporcionada y ofrecer análisis preliminares.
 Basa tus respuestas en evidencia científica y conocimiento médico actualizado."""
 
+# ─── Endpoint /api/chat ─────────────────────────────────────────────────────────
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    data = request.json
-    session_id = data.get('session_id')
+    data = request.json or {}
     user_message = data.get('message', '').strip()
-    image_data = data.get('image')
+    image_data   = data.get('image')
 
-    logger.info(f"Entrando en chat(): session_id={session_id}, user_message={user_message}, image_data={bool(image_data)}")
+    # Inicializar la sesión si es la primera vez
+    if 'step' not in session:
+        session['step'] = 1
+        session['data'] = []
+        session['admin'] = False
+        logger.info("Sesión nueva iniciada en Flask-Session.")
+        return jsonify(response=questions[1])
 
-    # Si es una nueva sesión
-    if not session_id or session_id not in session_steps:
-        session_id = str(uuid.uuid4())
-        session_steps[session_id] = 1
-        session_data[session_id] = []
-        session_admin[session_id] = False
-        logger.info(f"Nuevo session_id creado: {session_id}")
-        return jsonify({"session_id": session_id, "response": questions[1]})
+    step     = session['step']
+    is_admin = session.get('admin', False)
+    logger.info(f"[session] step={step}, admin={is_admin}, msg={user_message!r}")
 
-    step = session_steps[session_id]
-    is_admin = session_admin.get(session_id, False)
-
-    logger.info(f"session_id={session_id}, step={step}, is_admin={is_admin}")
-
-    # Activar modo admin
+    # Comando para activar modo admin
     if user_message.lower() == "admin":
-        session_admin[session_id] = True
-        logger.info(f"Modo Admin activado para session_id: {session_id}")
-        return jsonify({"session_id": session_id, "response": "🔓 Modo Admin activado. Ahora puedes escribir libremente o subir imágenes."})
+        session['admin'] = True
+        return jsonify(response="🔓 Modo Admin activado. Ahora puedes escribir libremente o subir imágenes.")
 
-    # Si solo se recibió una imagen sin texto
+    # Si reciben solo imagen, repiten la misma pregunta
     if image_data and not user_message:
-        logger.info(f"Solo imagen recibida, devolviendo pregunta actual para session_id: {session_id}, step: {step}")
-        return jsonify({"session_id": session_id, "response": questions[step]})
+        return jsonify(response=questions.get(step, questions[1]))
 
-    def is_valid_response(text):
+    # Validación mínima de respuestas
+    def is_valid(text):
         if is_admin:
             return True
-        if not text.strip():
+        if not text:
             return False
         if step == 1:
             return bool(re.search(r'\d{1,3}', text))
         if step == 2:
-            return any(g in text.lower() for g in ["masculino", "femenino", "m", "f", "hombre", "mujer"])
+            return any(g in text.lower() for g in ["masculino","femenino","m","f","hombre","mujer"])
         return True
 
-    # Procesar la respuesta del usuario
+    # Procesar respuesta textual
     if user_message:
-        if is_valid_response(user_message):
-            # Guardar la respuesta
-            if len(session_data[session_id]) < step:
-                session_data[session_id].append(user_message)
-            else:
-                # Reemplazar respuesta existente en caso de repetición
-                session_data[session_id][step-1] = user_message
-            
-            logger.info(f"Respuesta válida recibida para session_id: {session_id}, step: {step}. session_data: {session_data[session_id]}")
-
-            # Avanzar al siguiente paso si no estamos en el último
-            if step < len(questions):
-                session_steps[session_id] += 1
-                new_step = session_steps[session_id]
-                logger.info(f"Incrementando step para session_id: {session_id}. nuevo step: {new_step}")
-                if new_step <= len(questions):
-                    return jsonify({"session_id": session_id, "response": questions[new_step]})
-            else:
-                # Marcar como listo para el análisis
-                session_steps[session_id] = len(questions) + 1  # Valor específico para indicar análisis final
-                logger.info(f"Todas las preguntas respondidas para session_id: {session_id}. Preparando para el análisis.")
+        if not is_valid(user_message):
+            return jsonify(response="⚠️ Por favor, proporcione una respuesta válida para avanzar.")
+        # Guardar o actualizar
+        data_list = session['data']
+        if len(data_list) < step:
+            data_list.append(user_message)
         else:
-            logger.warning(f"Respuesta inválida recibida para session_id: {session_id}, step: {step}")
-            return jsonify({"session_id": session_id, "response": "⚠️ Por favor, proporcione una respuesta válida."})
+            data_list[step-1] = user_message
+        session['data'] = data_list
 
-    # Si se completó el cuestionario o está en modo admin, generar el análisis
-    if session_steps[session_id] > len(questions) or is_admin:
-        # Verificar que tengamos suficientes respuestas
-        if len(session_data[session_id]) < min(3, len(questions)):
-            # No tenemos suficientes datos para hacer un análisis
-            return jsonify({"session_id": session_id, "response": "⚠️ Necesito más información para generar un análisis. Por favor responda al menos las primeras preguntas."})
-        
-        # Mapear preguntas con respuestas disponibles
-        respuestas = {}
-        for i, respuesta in enumerate(session_data[session_id]):
-            if i < len(questions):
-                respuestas[questions[i+1]] = respuesta
-        
-        # Extraer datos clave
-        edad = respuestas.get(questions[1], "")
-        sexo = respuestas.get(questions[2], "")
-        motivo = respuestas.get(questions[3], "")
+        # Avanzar paso
+        if step < len(questions):
+            session['step'] = step + 1
+            return jsonify(response=questions[step+1])
+        else:
+            # Marca fin de cuestionario
+            session['step'] = len(questions) + 1
 
-        if not is_admin and (not edad.strip() or not sexo.strip() or not motivo.strip()):
-            logger.warning(f"Faltan datos esenciales para el análisis en session_id: {session_id}")
-            return jsonify({"session_id": session_id, "response": "⚠️ Necesito edad, sexo y motivo de consulta para poder continuar. Por favor, verifica que hayas respondido esas preguntas."})
+    # Si completó o está en admin, generar análisis
+    if session['step'] > len(questions) or is_admin:
+        respuestas = {questions[i+1]: ans 
+                      for i, ans in enumerate(session['data'])}
 
-        info = "\n".join(f"{i + 1}. {q}\n→ {a}" for i, (q, a) in enumerate(respuestas.items()))
-        analysis_prompt = f"Gracias. A continuación se presenta un informe clínico con base en la información suministrada.\n\n---\n\n📝 **Informe Clínico Detallado**\n\n📌 Datos Recopilados:\n{info}\n\n🔍 **Análisis Clínico**\nPor favor, interpreta esta información desde el punto de vista médico y sugiere hipótesis diagnósticas posibles con base en evidencia científica, factores de riesgo, y la presentación del caso. Finaliza con recomendaciones para el médico tratante."
+        # Validar datos esenciales
+        if not is_admin and (not respuestas.get(questions[1]) 
+                             or not respuestas.get(questions[2]) 
+                             or not respuestas.get(questions[3])):
+            return jsonify(response="⚠️ Necesito edad, sexo y motivo de consulta antes de continuar.")
+
+        # Construir prompt
+        info = "\n".join(f"{idx}. {q}\n→ {a}"
+                         for idx, (q,a) in enumerate(respuestas.items(), start=1))
+        analysis_prompt = (
+            "📝 **Informe Clínico**\n\n" 
+            + info +
+            "\n\n🔍 **Análisis**\nInterpreta estos datos y sugiere hipótesis diagnósticas con base en evidencia."
+        )
 
         parts = [
             {"role": "system", "parts": [SYSTEM_PROMPT]},
-            {"role": "user", "parts": [analysis_prompt]}
+            {"role": "user",   "parts": [analysis_prompt]}
         ]
-
+        # Adjuntar imagen si la hay
         if image_data:
             try:
-                image_bytes = base64.b64decode(image_data.split(',')[-1])
-                parts[1]["parts"].append({"inline_data": {"mime_type": "image/png", "data": image_bytes}})
-                logger.info(f"Imagen adjuntada para el análisis en session_id: {session_id}")
-            except Exception as e:
-                logger.warning("No se pudo procesar la imagen enviada.", exc_info=True)
+                img_bytes = base64.b64decode(image_data.split(',')[-1])
+                parts[1]["parts"].append({
+                    "inline_data": {"mime_type": "image/png", "data": img_bytes}
+                })
+            except:
+                logger.warning("No se pudo decodificar imagen.", exc_info=True)
 
+        # Llamar a Gemini
         try:
-            # Usar el modelo de IA para generar la respuesta
             model = genai.GenerativeModel("models/gemini-2.0-flash")
-            response = model.generate_content(parts)
-            ai_response = getattr(response, 'text', '').strip()
-            
-            # Respuesta de respaldo en caso de error:
-            if not ai_response:
-                ai_response = f"📋 **Análisis preliminar para paciente de {edad} años**\n\nBasado en la información proporcionada, se sugiere considerar las siguientes hipótesis diagnósticas...\n\n💡 **Recomendaciones para seguimiento:**\n- Realizar historia clínica completa\n- Considerar estudios complementarios específicos\n- Evaluar necesidad de interconsulta especializada"
-            
-            logger.info(f"Respuesta de la IA para session_id: {session_id}")
-            return jsonify({"session_id": session_id, "response": ai_response})
+            resp  = model.generate_content(parts)
+            text = getattr(resp, 'text', '').strip()
+            if not text:
+                text = "🤖 **Análisis preliminar**: no hubo respuesta del modelo."
+            return jsonify(response=text)
         except Exception as e:
-            logger.error(f"Error en /api/chat para session_id: {session_id}: {e}", exc_info=True)
-            return jsonify({"error": str(e)}), 500
+            logger.error("Error generando análisis:", exc_info=True)
+            return jsonify(response="❌ Error interno al generar análisis."), 500
 
-    # Fallback final: repetir la pregunta actual
-    logger.info(f"Fallback: repitiendo la pregunta actual (step={step}) para session_id: {session_id}")
-    return jsonify({"session_id": session_id, "response": questions[step]})
+    # Fallback: repetir la pregunta actual
+    return jsonify(response=questions.get(step, questions[1]))
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
