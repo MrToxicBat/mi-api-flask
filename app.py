@@ -4,6 +4,7 @@ import logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import google.generativeai as genai
+from functools import lru_cache
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +20,7 @@ CORS(app)
 session_steps = {}
 session_data = {}
 
-# Prompt base extendido
+# Prompt base extendido (separado para usar como mensaje de sistema)
 SYSTEM_PROMPT = '''
 Eres una inteligencia artificial médica especializada en apoyar a médicos en la evaluación y comparación de diagnósticos. Tu objetivo es proporcionar análisis clínicos basados en la información suministrada por el profesional de la salud, para ayudar a confirmar, descartar o ampliar hipótesis diagnósticas. No estás autorizada para sustituir el juicio del médico, solo para complementarlo.
 
@@ -71,6 +72,19 @@ questions = {
     9: "🧪 Estudios diagnósticos realizados y resultados si se conocen:"
 }
 
+# Cache básico para respuestas repetidas
+@lru_cache(maxsize=100)
+def get_cached_response(full_prompt):
+    model = genai.GenerativeModel("models/gemini-2.0-flash")
+    response = model.generate_content([{
+        "role": "system",
+        "parts": [SYSTEM_PROMPT]
+    }, {
+        "role": "user",
+        "parts": [full_prompt]
+    }])
+    return getattr(response, 'text', '').strip()
+
 @app.route('/api/chat', methods=['POST'])
 def chat():
     data = request.json
@@ -104,9 +118,7 @@ def chat():
             )
 
     try:
-        model = genai.GenerativeModel("models/gemini-2.0-flash")
-        resp = model.generate_content([{ "text": f"{SYSTEM_PROMPT}\n\n{prompt}" }])
-        ai_response = getattr(resp, 'text', '').strip()
+        ai_response = get_cached_response(prompt)
         return jsonify({
             "session_id": session_id,
             "response": ai_response
