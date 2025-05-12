@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "dev_secret_key")
 
-# Solo tu dominio y cookies
+# CORS para tu frontend
 CORS(app,
      supports_credentials=True,
      origins=[os.getenv("FRONTEND_ORIGIN", "https://code-soluction.com")])
@@ -54,6 +54,13 @@ def get_system_instruction():
         "Cuando estén completos, analiza la información clínica (y cualquier imagen médica) y sugiere posibles diagnósticos y recomendaciones."
     )
 
+def build_summary(collected: dict) -> str:
+    """Construye un bloque de texto con todo lo ya recopilado."""
+    if not collected:
+        return ""
+    lines = [f"- **{k.replace('_',' ').capitalize()}**: {v}" for k, v in collected.items()]
+    return "Información recopilada hasta ahora:\n" + "\n".join(lines) + "\n\n"
+
 # Sesiones en memoria
 session_data = {}
 
@@ -62,7 +69,7 @@ def chat():
     data       = request.json or {}
     user_text  = data.get('message', '').strip()
     image_b64  = data.get('image')       # Base64 puro
-    image_type = data.get('image_type')  # p.ej. "image/png"
+    image_type = data.get('image_type')  # e.g. "image/png"
 
     # — Sesión y paso —
     sid = flask_session.get('session_id')
@@ -76,12 +83,13 @@ def chat():
     step      = flask_session['step']
     collected = session_data[sid]
 
-    # — Decide el texto del prompt según el flujo —
+    # — Manejo de inputs e incremento de paso —
     if image_b64 and not user_text:
-        # Análisis multimodal inmediato
-        prompt = "Por favor, analiza esta imagen médica."
+        # no guardamos en collected: análisis directo
+        next_prompt = "Por favor, analiza esta imagen médica."
+        summary = ""
     else:
-        # Primera parte: guardamos la respuesta si falta campo
+        # Si llega texto y aún faltan campos, lo guardamos
         if user_text and step < len(required_fields):
             campo = required_fields[step]
             collected[campo] = user_text
@@ -89,34 +97,36 @@ def chat():
             step += 1
             flask_session['step'] = step
 
-        # Si aún faltan, pedimos el siguiente
+        # Elegir siguiente prompt
         if step < len(required_fields):
             siguiente = required_fields[step]
-            prompt = field_prompts[siguiente].format(**collected)
+            next_prompt = field_prompts[siguiente].format(**collected)
         else:
-            # Todos respondidos → análisis final
-            info = "\n".join(f"- {k}: {v}" for k, v in collected.items())
-            prompt = (
+            # Todos los campos listos: análisis final
+            info_lines = "\n".join(f"- {k}: {v}" for k, v in collected.items())
+            next_prompt = (
                 "Gracias por toda la información. Con estos datos, analiza en profundidad los hallazgos "
                 "y sugiere diagnósticos, hipótesis y recomendaciones.\n\n"
-                f"Información recopilada:\n{info}"
+                f"Información recopilada:\n{info_lines}"
             )
-            # Limpiar para nueva sesión
+            # Limpiar para nueva conversación
             session_data.pop(sid, None)
             flask_session.pop('session_id', None)
             flask_session.pop('step', None)
             logger.info(f"Sesión {sid} completada")
 
-    # — Construir único full_prompt con instrucción + pregunta —
-    full_prompt = f"{get_system_instruction()}\n\n{prompt}"
+        summary = build_summary(collected)
 
-    # — Montamos inputs: imagen primero (si la hay), luego texto —
+    # — Construir prompt completo —
+    full_prompt = f"{get_system_instruction()}\n\n{summary}{next_prompt}"
+
+    # — Montar inputs multimodal —
     inputs = []
     if image_b64 and not user_text:
         inputs.append({"image": {"data": image_b64, "mime_type": image_type}})
     inputs.append({"text": full_prompt})
 
-    # — Llamada multimodal —
+    # — Llamada a Gemini —
     try:
         model = genai.GenerativeModel(MODEL_NAME)
         resp  = model.generate_content(inputs)
