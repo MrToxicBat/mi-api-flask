@@ -9,6 +9,7 @@ import google.generativeai as genai
 # ——— Configuración básica ———
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "dev_secret_key")
 
@@ -20,7 +21,7 @@ CORS(app,
 # ——— Inicializar Gemini ———
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-# Modelo multimodal válido (detectado con /api/list-models)
+# Modelo multimodal válido
 MODEL_NAME = "models/gemini-2.0-flash"
 
 # ——— Flujo de preguntas ———
@@ -50,83 +51,109 @@ field_prompts = {
 def get_system_instruction():
     return (
         "Eres una IA médica multimodal. "
-        "Recopila primero estos datos paso a paso: motivo principal, duración de síntomas, intensidad, edad, sexo y antecedentes. "
-        "Cuando estén completos, analiza la información clínica (y cualquier imagen médica) y sugiere posibles diagnósticos y recomendaciones."
+        "Primero analiza cualquier imagen médica que te envíen. "
+        "Solo después, recopila datos clínicos paso a paso y al final sugiere diagnósticos."
     )
 
 def build_summary(collected: dict) -> str:
-    """Construye un bloque de texto con todo lo ya recopilado."""
     if not collected:
         return ""
-    lines = [f"- **{k.replace('_',' ').capitalize()}**: {v}" for k, v in collected.items()]
+    lines = [f"- **{k.replace('_',' ').capitalize()}**: {v}"
+             for k, v in collected.items()]
     return "Información recopilada hasta ahora:\n" + "\n".join(lines) + "\n\n"
 
-# Sesiones en memoria
+# ——— Almacén en memoria con estructura avanzada ———
+# session_data[sid] = {
+#   "fields": { ... },
+#   "image_analyzed": bool
+# }
 session_data = {}
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
     data       = request.json or {}
     user_text  = data.get('message', '').strip()
-    image_b64  = data.get('image')       # Base64 puro
-    image_type = data.get('image_type')  # e.g. "image/png"
+    image_b64  = data.get('image')
+    image_type = data.get('image_type')
 
-    # — Sesión y paso —
+    # — Inicializar sesión si es nueva —
     sid = flask_session.get('session_id')
     if not sid or sid not in session_data:
         sid = str(uuid.uuid4())
         flask_session['session_id'] = sid
         flask_session['step'] = 0
-        session_data[sid] = {}
+        session_data[sid] = {
+            "fields": {},
+            "image_analyzed": False
+        }
         logger.info(f"Nueva sesión {sid}")
 
-    step      = flask_session['step']
-    collected = session_data[sid]
+    step       = flask_session['step']
+    state      = session_data[sid]
+    collected  = state["fields"]
+    image_done = state["image_analyzed"]
 
-    # — Manejo de inputs e incremento de paso —
-    if image_b64 and not user_text:
-        # no guardamos en collected: análisis directo
-        next_prompt = "Por favor, analiza esta imagen médica."
-        summary = ""
+    # — Caso 1: imagen nueva y aún no la analizamos —
+    if image_b64 and not image_done:
+        # Vamos a analizar la imagen primero
+        full_prompt = (
+            f"{get_system_instruction()}\n\n"
+            "Por favor, analiza esta imagen médica y describe hallazgos relevantes."
+        )
+        inputs = [
+            {"image": {"data": image_b64, "mime_type": image_type}},
+            {"text": full_prompt}
+        ]
+
+        # Marcamos la imagen como ya analizada
+        state["image_analyzed"] = True
+
+        try:
+            model = genai.GenerativeModel(MODEL_NAME)
+            resp  = model.generate_content(inputs)
+            ai_text = getattr(resp, "text", "").strip()
+            return jsonify({"response": ai_text})
+        except Exception as e:
+            logger.error("Error analizando imagen", exc_info=True)
+            return jsonify({"error": str(e)}), 500
+
+    # — Caso 2: después de imagen (o sin imagen) → flujo de preguntas —
+
+    # Si el usuario envía texto y faltan campos, lo guardamos
+    if user_text and step < len(required_fields):
+        campo = required_fields[step]
+        collected[campo] = user_text
+        logger.info(f"Sesión {sid}: guardado {campo} = {user_text!r}")
+        step += 1
+        flask_session['step'] = step
+
+    # Construir el siguiente prompt
+    if step < len(required_fields):
+        # Pedimos el siguiente dato
+        siguiente   = required_fields[step]
+        question    = field_prompts[siguiente].format(**collected)
+        summary_txt = build_summary(collected)
+        full_prompt = (
+            f"{get_system_instruction()}\n\n"
+            f"{summary_txt}{question}"
+        )
     else:
-        # Si llega texto y aún faltan campos, lo guardamos
-        if user_text and step < len(required_fields):
-            campo = required_fields[step]
-            collected[campo] = user_text
-            logger.info(f"Sesión {sid}: guardado {campo} = {user_text!r}")
-            step += 1
-            flask_session['step'] = step
+        # Ya recogimos todo: hacemos análisis final
+        info_lines = "\n".join(f"- {k}: {v}" for k, v in collected.items())
+        conclusion = (
+            "Gracias por toda la información. Con estos datos, analiza en profundidad los hallazgos "
+            "y sugiere diagnósticos, hipótesis y recomendaciones.\n\n"
+            f"Información recopilada:\n{info_lines}"
+        )
+        full_prompt = f"{get_system_instruction()}\n\n{conclusion}"
+        # Limpiar sesión para nueva conversación
+        session_data.pop(sid, None)
+        flask_session.pop('session_id', None)
+        flask_session.pop('step', None)
+        logger.info(f"Sesión {sid} completada")
 
-        # Elegir siguiente prompt
-        if step < len(required_fields):
-            siguiente = required_fields[step]
-            next_prompt = field_prompts[siguiente].format(**collected)
-        else:
-            # Todos los campos listos: análisis final
-            info_lines = "\n".join(f"- {k}: {v}" for k, v in collected.items())
-            next_prompt = (
-                "Gracias por toda la información. Con estos datos, analiza en profundidad los hallazgos "
-                "y sugiere diagnósticos, hipótesis y recomendaciones.\n\n"
-                f"Información recopilada:\n{info_lines}"
-            )
-            # Limpiar para nueva conversación
-            session_data.pop(sid, None)
-            flask_session.pop('session_id', None)
-            flask_session.pop('step', None)
-            logger.info(f"Sesión {sid} completada")
-
-        summary = build_summary(collected)
-
-    # — Construir prompt completo —
-    full_prompt = f"{get_system_instruction()}\n\n{summary}{next_prompt}"
-
-    # — Montar inputs multimodal —
-    inputs = []
-    if image_b64 and not user_text:
-        inputs.append({"image": {"data": image_b64, "mime_type": image_type}})
-    inputs.append({"text": full_prompt})
-
-    # — Llamada a Gemini —
+    # Enviamos al modelo
+    inputs = [{"text": full_prompt}]
     try:
         model = genai.GenerativeModel(MODEL_NAME)
         resp  = model.generate_content(inputs)
