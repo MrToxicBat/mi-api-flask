@@ -34,8 +34,8 @@ session_data = {}
 # ————— Instrucción del sistema para análisis de imagen —————
 IMAGE_INSTRUCTION = (
     "Eres una IA médica multimodal. Has recibido una imagen médica. "
-    "Sin solicitar más contexto, analiza la imagen y proporciona 1) Un resumen de lo que ves, 2) Un diagnóstico preliminar, y 3) Tratamientos sugeridos. "
-    "No uses asteriscos y sepáralo en secciones claras bajo los títulos: Resumen, Diagnóstico y Tratamientos."
+    "Sin pedir más contexto, analiza la imagen y responde con las siguientes secciones separadas y claras: "
+    "Resumen, Diagnóstico y Tratamientos."
 )
 
 # ————— Helper para SID —————
@@ -55,24 +55,25 @@ def analyze_image():
     if not img_b64:
         return jsonify({'response': 'No se ha recibido ninguna imagen.'}), 200
 
-    # Construir prompt usando solo la imagen
-    prompt = IMAGE_INSTRUCTION + "\n\n" + "Imagen (base64): " + img_b64[:1000]
-    logger.info(f"[analyze-image] SID={sid}, prompt len={len(prompt)}")
-
     try:
-        model = genai.GenerativeModel(MODEL_NAME)
-        resp = model.generate_content({"parts": [{"text": prompt}]})
-        ai_text = getattr(resp, "text", "").strip()
+        # Llamada multimodal directa a Gemini
+        resp = genai.chat(
+            model=MODEL_NAME,
+            image={"data": img_b64, "mime_type": data.get('image_type', 'image/png')},
+            prompt=IMAGE_INSTRUCTION
+        )
+        ai_text = getattr(resp, 'reply', '') or getattr(resp, 'text', '')
         logger.info(f"[analyze-image] SID={sid}, ai_text len={len(ai_text)}")
-        return jsonify({'response': ai_text}), 200
+        return jsonify({'response': ai_text.strip()}), 200
+
     except Exception:
-        logger.exception("[analyze-image] Error generando análisis")
+        logger.exception("[analyze-image] Error generando análisis multimodal")
         return jsonify({'response': 'Lo siento, no pude procesar la imagen.'}), 500
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    # Este endpoint queda para contextos adicionales, pero vacío si no se usa
-    return jsonify({'response': 'Endpoint de chat deshabilitado cuando se analiza imagen directamente.'}), 200
+    # Deshabilitado cuando se analiza imagen directamente
+    return jsonify({'response': ''}), 200
 
 if __name__ == '__main__':
     port = int(os.getenv("PORT", 5000))
