@@ -2,138 +2,159 @@ import os
 import uuid
 import logging
 import base64
-import re
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, session as flask_session
 from flask_cors import CORS
 import google.generativeai as genai
-from functools import lru_cache
 
-# Configuración de logging
+# ——— Configuración básica ———
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configurar la API de Gemini
+app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY", "dev_secret_key")
+
+# CORS para tu frontend
+CORS(app,
+     supports_credentials=True,
+     origins=[os.getenv("FRONTEND_ORIGIN", "https://code-soluction.com")])
+
+# ——— Inicializar Gemini ———
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-app = Flask(__name__)
-CORS(app)
+# Modelo multimodal válido
+MODEL_NAME = "models/gemini-2.0-flash"
 
-session_steps = {}
-session_data = {}
-session_admin = {}
-
-SYSTEM_PROMPT = '''
-Eres una inteligencia artificial médica especializada en apoyar a médicos en la evaluación y comparación de diagnósticos. Tu objetivo es proporcionar análisis clínicos basados en la información suministrada por el profesional de la salud, para ayudar a confirmar, descartar o ampliar hipótesis diagnósticas. No estás autorizada para sustituir el juicio del médico, solo para complementarlo.
-
-Antes de generar cualquier diagnóstico diferencial, interpretación o sugerencia, debes recopilar al menos la siguiente **información clínica básica** del paciente:
-
-1. Edad  
-2. Sexo  
-3. Motivo de consulta (síntoma principal, causa de la visita)  
-4. Tiempo de evolución de los síntomas  
-5. Antecedentes personales patológicos (enfermedades previas, condiciones crónicas, cirugías, etc.)  
-6. Medicación actual (principios activos o nombres comerciales, dosis si es posible)  
-7. Alergias conocidas (medicamentosas, alimentarias, ambientales, etc.)  
-8. Antecedentes familiares de enfermedades relevantes (genéticas, crónicas o malignas)  
-9. Estudios diagnósticos realizados (análisis clínicos, imágenes, biopsias, etc., con resultados si se conocen)
-
-
-
-questions = {
-    1: "👤 Edad del paciente:",
-    2: "🚻 Sexo asignado al nacer y género actual:",
-    3: "📍 Motivo principal de consulta:",
-    4: "⏳ ¿Desde cuándo presenta estos síntomas? ¿Han cambiado con el tiempo?",
-    5: "📋 Antecedentes médicos personales (crónicos, quirúrgicos, etc.):",
-    6: "💊 Medicamentos actuales (nombre, dosis, frecuencia):",
-    7: "⚠️ Alergias conocidas (medicamentos, alimentos, etc.):",
-    8: "👪 Antecedentes familiares relevantes:",
-    9: "🧪 Estudios diagnósticos realizados y resultados si se conocen:"
+# ——— Flujo de preguntas ———
+required_fields = [
+    "motivo_principal",
+    "duracion_sintomas",
+    "intensidad",
+    "edad",
+    "sexo",
+    "antecedentes_medicos",
+]
+field_prompts = {
+    "motivo_principal":
+        "👋 Hola, doctor/a. ¿Cuál considera usted que es el motivo principal de consulta de este paciente?",
+    "duracion_sintomas":
+        "⏳ Gracias. Me dice que el motivo es “{motivo_principal}”. ¿Cuánto tiempo lleva con esos síntomas?",
+    "intensidad":
+        "⚖️ Entendido. ¿Qué tan severos son esos síntomas (leve, moderado, severo)?",
+    "edad":
+        "🎂 Perfecto. ¿Qué edad tiene el paciente?",
+    "sexo":
+        "🚻 Bien. ¿Cuál es el sexo asignado al nacer y el género actual?",
+    "antecedentes_medicos":
+        "📝 ¿Antecedentes médicos relevantes (enfermedades previas, cirugías, alergias, medicación)?",
 }
 
-@lru_cache(maxsize=100)
-def get_cached_response(parts):
-    model = genai.GenerativeModel("models/gemini-2.0-flash")
-    response = model.generate_content(parts)
-    return getattr(response, 'text', '').strip()
+def get_system_instruction():
+    return (
+        "Eres una IA médica multimodal experta en interpretación de imágenes médicas. "
+        "Al recibir una imagen, realiza un análisis profundo y estructurado. "
+        "Luego, recopila datos clínicos paso a paso y al final sugiere diagnósticos y recomendaciones."
+    )
+
+def build_summary(collected: dict) -> str:
+    if not collected:
+        return ""
+    lines = [f"- **{k.replace('_',' ').capitalize()}**: {v}"
+             for k, v in collected.items()]
+    return "📋 Información recopilada hasta ahora:\n" + "\n".join(lines) + "\n\n"
+
+# Estado en memoria
+# session_data[sid] = { "fields": {...}, "image_analyzed": bool }
+session_data = {}
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    data = request.json
-    session_id = data.get('session_id')
-    user_message = data.get('message', '').strip()
-    image_data = data.get('image')
+    data       = request.json or {}
+    user_text  = data.get('message', '').strip()
+    image_b64  = data.get('image')
+    image_type = data.get('image_type')
 
-    if not session_id or session_id not in session_steps:
-        session_id = str(uuid.uuid4())
-        session_steps[session_id] = 1
-        session_data[session_id] = []
-        session_admin[session_id] = False
-        return jsonify({"session_id": session_id, "response": questions[1]})
+    # — Inicializar sesión si es nueva —
+    sid = flask_session.get('session_id')
+    if not sid or sid not in session_data:
+        sid = str(uuid.uuid4())
+        flask_session['session_id'] = sid
+        flask_session['step'] = 0
+        session_data[sid] = {
+            "fields": {},
+            "image_analyzed": False
+        }
+        logger.info(f"Nueva sesión {sid}")
 
-    step = session_steps[session_id]
-    is_admin = session_admin.get(session_id, False)
+    step       = flask_session.get('step', 0)
+    state      = session_data[sid]
+    collected  = state["fields"]
+    image_done = state["image_analyzed"]
 
-    if user_message.lower() == "admin":
-        session_admin[session_id] = True
-        return jsonify({"session_id": session_id, "response": "🔓 Modo Admin activado. Ahora puedes escribir libremente o subir imágenes."})
+    parts = []
+    # — Caso 1: analizar imagen antes que nada —
+    if image_b64 and not image_done:
+        parts.append({
+            "mime_type": image_type,
+            "data": image_b64
+        })
+        # Nuevo prompt de análisis super detallado
+        prompt_text = (
+            "🖼️ **Análisis exhaustivo de imagen**:\n"
+            "1. 🔍 **Calidad técnica**: evalúa proyección, resolución, contraste y posibles artefactos.\n"
+            "2. 🧩 **Estructuras y morfología**: describe directamente la anatomía visible, contornos, simetría, densidades.\n"
+            "3. 📐 **Medidas y proporciones**: menciona dimensiones, relaciones anatómicas relevantes.\n"
+            "4. ⚠️ **Hallazgos patológicos**: destaca zonas anómalas (lesiones, masas, calcificaciones, edema).\n"
+            "5. 💡 **Hipótesis diagnóstica diferencial**: propone posibles causas ordenadas por probabilidad.\n"
+            "6. 📝 **Recomendaciones**: sugiere estudios adicionales o pasos clínicos siguientes.\n"
+            "Usa una respuesta bien seccionada, con emojis moderados para marcar apartados."
+        )
+        state["image_analyzed"] = True
 
-    if image_data and not user_message:
-        return jsonify({"session_id": session_id, "response": questions[step]})
+    else:
+        # — Guardar texto en campo si corresponde —
+        if user_text and step < len(required_fields):
+            campo = required_fields[step]
+            collected[campo] = user_text
+            logger.info(f"Sesión {sid}: guardado {campo} = {user_text!r}")
+            step += 1
+            flask_session['step'] = step
 
-    def is_valid_response(text):
-        if is_admin:
-            return True
-        if not text.strip():
-            return False
-        if step == 1:
-            return bool(re.search(r'\d{1,3}', text))
-        if step == 2:
-            return any(g in text.lower() for g in ["masculino", "femenino", "m", "f", "hombre", "mujer"])
-        return True
-
-    if user_message:
-        if is_valid_response(user_message):
-            session_data[session_id].append(user_message)
-            if step < len(questions):
-                session_steps[session_id] += 1
-                return jsonify({"session_id": session_id, "response": questions[step + 1]})
+        # — Preparar siguiente prompt —
+        if step < len(required_fields):
+            siguiente = required_fields[step]
+            question = field_prompts[siguiente].format(**collected)
+            summary = build_summary(collected)
+            prompt_text = summary + question
         else:
-            return jsonify({"session_id": session_id, "response": "⚠️ Por favor, proporcione una respuesta válida."})
+            # — Análisis final —
+            info_lines = "\n".join(f"- {k}: {v}" for k, v in collected.items())
+            prompt_text = (
+                "✅ Gracias por toda la información clínica.\n"
+                "Con estos datos, realiza un análisis detallado:\n"
+                "• 🔍 Hallazgos\n"
+                "• 💡 Hipótesis diagnóstica\n"
+                "• 📝 Recomendaciones\n\n"
+                f"📋 Información completa:\n{info_lines}"
+            )
+            # reset session
+            session_data.pop(sid, None)
+            flask_session.pop('session_id', None)
+            flask_session.pop('step', None)
+            logger.info(f"Sesión {sid} completada")
 
-    if session_steps[session_id] > len(questions) or is_admin:
-        respuestas = dict(zip(questions.values(), session_data[session_id]))
-        edad = next((v for k, v in respuestas.items() if "Edad" in k), "")
-        sexo = next((v for k, v in respuestas.items() if "Sexo" in k), "")
-        motivo = next((v for k, v in respuestas.items() if "Motivo" in k), "")
+    # — Construir prompt completo y llamar al modelo —
+    full_text = f"{get_system_instruction()}\n\n{prompt_text}"
+    parts.append({"text": full_text})
 
-        if not is_admin and (not edad.strip() or not sexo.strip() or not motivo.strip()):
-            return jsonify({"session_id": session_id, "response": "⚠️ Necesito edad, sexo y motivo de consulta para poder continuar. Por favor, verifica que hayas respondido esas preguntas."})
-
-        info = "\n".join(f"{i+1}. {q}\n→ {a}" for i, (q, a) in enumerate(zip(questions.values(), session_data[session_id])))
-        analysis_prompt = f"Gracias. A continuación se presenta un informe clínico con base en la información suministrada.\n\n---\n\n📝 **Informe Clínico Detallado**\n\n📌 Datos Recopilados:\n{info}\n\n🔍 **Análisis Clínico**\nPor favor, interpreta esta información desde el punto de vista médico y sugiere hipótesis diagnósticas posibles con base en evidencia científica, factores de riesgo, y la presentación del caso. Finaliza con recomendaciones para el médico tratante."
-
-        parts = [
-            {"role": "system", "parts": [SYSTEM_PROMPT]},
-            {"role": "user", "parts": [analysis_prompt]}
-        ]
-
-        if image_data:
-            try:
-                image_bytes = base64.b64decode(image_data.split(',')[-1])
-                parts[1]["parts"].append({"inline_data": {"mime_type": "image/png", "data": image_bytes}})
-            except Exception as e:
-                logger.warning("No se pudo procesar la imagen enviada.", exc_info=True)
-
-        try:
-            ai_response = get_cached_response(tuple(map(str, parts)))
-            return jsonify({"session_id": session_id, "response": ai_response})
-        except Exception as e:
-            logger.error(f"Error en /api/chat: {e}", exc_info=True)
-            return jsonify({"error": str(e)}), 500
-
-    return jsonify({"session_id": session_id, "response": questions[step]})
+    try:
+        model = genai.GenerativeModel(MODEL_NAME)
+        resp  = model.generate_content({"parts": parts})
+        ai_text = getattr(resp, "text", "").strip()
+        return jsonify({"response": ai_text})
+    except Exception as e:
+        logger.error("Error en /api/chat", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port
+    port = int(os.getenv("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
