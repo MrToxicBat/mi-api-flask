@@ -3,31 +3,25 @@ import uuid
 import logging
 import base64
 import re
-from functools import lru_cache
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import google.generativeai as genai
+from functools import lru_cache
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configurar la API Key de Gemini
+# Configurar la API de Gemini
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-# Inicializar modelo generativo
-MODEL_NAME = os.getenv("GEMINI_MODEL", "models/gemini-2.0-flash")
-model = genai.GenerativeModel(MODEL_NAME)
 
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "dev_secret_key")
-CORS(app, supports_credentials=True)
+CORS(app)
 
-# Manejo de sesiones
 session_steps = {}
 session_data = {}
 session_admin = {}
 
-# Prompt del sistema
 SYSTEM_PROMPT = '''
 Eres una inteligencia artificial médica especializada en apoyar a médicos en la evaluación y comparación de diagnósticos. Tu objetivo es proporcionar análisis clínicos basados en la información suministrada por el profesional de la salud, para ayudar a confirmar, descartar o ampliar hipótesis diagnósticas. No estás autorizada para sustituir el juicio del médico, solo para complementarlo.
 
@@ -42,7 +36,8 @@ Antes de generar cualquier diagnóstico diferencial, interpretación o sugerenci
 7. Alergias conocidas (medicamentosas, alimentarias, ambientales, etc.)  
 8. Antecedentes familiares de enfermedades relevantes (genéticas, crónicas o malignas)  
 9. Estudios diagnósticos realizados (análisis clínicos, imágenes, biopsias, etc., con resultados si se conocen)
-'''
+
+
 
 questions = {
     1: "👤 Edad del paciente:",
@@ -57,22 +52,18 @@ questions = {
 }
 
 @lru_cache(maxsize=100)
-def get_cached_response(parts_key):
-    try:
-        # parts_key es una tupla serializada de partes para cache
-        return model.generate_content(parts_key).text.strip()
-    except Exception as e:
-        logger.error(f"Error al generar contenido: {e}", exc_info=True)
-        raise
+def get_cached_response(parts):
+    model = genai.GenerativeModel("models/gemini-2.0-flash")
+    response = model.generate_content(parts)
+    return getattr(response, 'text', '').strip()
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    data = request.json or {}
+    data = request.json
     session_id = data.get('session_id')
     user_message = data.get('message', '').strip()
     image_data = data.get('image')
 
-    # Inicializar nueva sesión
     if not session_id or session_id not in session_steps:
         session_id = str(uuid.uuid4())
         session_steps[session_id] = 1
@@ -81,18 +72,19 @@ def chat():
         return jsonify({"session_id": session_id, "response": questions[1]})
 
     step = session_steps[session_id]
-    is_admin = session_admin[session_id]
+    is_admin = session_admin.get(session_id, False)
 
-    # Activar modo admin
     if user_message.lower() == "admin":
         session_admin[session_id] = True
         return jsonify({"session_id": session_id, "response": "🔓 Modo Admin activado. Ahora puedes escribir libremente o subir imágenes."})
 
-    # Validar respuesta del usuario
+    if image_data and not user_message:
+        return jsonify({"session_id": session_id, "response": questions[step]})
+
     def is_valid_response(text):
         if is_admin:
             return True
-        if not text:
+        if not text.strip():
             return False
         if step == 1:
             return bool(re.search(r'\d{1,3}', text))
@@ -100,7 +92,6 @@ def chat():
             return any(g in text.lower() for g in ["masculino", "femenino", "m", "f", "hombre", "mujer"])
         return True
 
-    # Manejo de mensajes de texto
     if user_message:
         if is_valid_response(user_message):
             session_data[session_id].append(user_message)
@@ -110,45 +101,39 @@ def chat():
         else:
             return jsonify({"session_id": session_id, "response": "⚠️ Por favor, proporcione una respuesta válida."})
 
-    # Preparar y enviar análisis final (texto e imagen)
-    if step > len(questions) or is_admin:
-        # Verificar datos obligatorios
+    if session_steps[session_id] > len(questions) or is_admin:
         respuestas = dict(zip(questions.values(), session_data[session_id]))
-        if not is_admin:
-            for key in ["👤 Edad del paciente:", "🚻 Sexo asignado al nacer y género actual:", "📍 Motivo principal de consulta:"]:
-                if not respuestas.get(key, '').strip():
-                    return jsonify({"session_id": session_id, "response": "⚠️ Necesito edad, sexo y motivo de consulta para continuar."})
+        edad = next((v for k, v in respuestas.items() if "Edad" in k), "")
+        sexo = next((v for k, v in respuestas.items() if "Sexo" in k), "")
+        motivo = next((v for k, v in respuestas.items() if "Motivo" in k), "")
 
-        # Construir prompt
+        if not is_admin and (not edad.strip() or not sexo.strip() or not motivo.strip()):
+            return jsonify({"session_id": session_id, "response": "⚠️ Necesito edad, sexo y motivo de consulta para poder continuar. Por favor, verifica que hayas respondido esas preguntas."})
+
         info = "\n".join(f"{i+1}. {q}\n→ {a}" for i, (q, a) in enumerate(zip(questions.values(), session_data[session_id])))
-        analysis_prompt = (
-            "📝 Informe Clínico Detallado\n" +
-            "📌 Datos Recopilados:\n" + info + "\n\n" +
-            "🔍 Análisis Clínico y sugerencias diagnósticas basadas en evidencia."
-        )
+        analysis_prompt = f"Gracias. A continuación se presenta un informe clínico con base en la información suministrada.\n\n---\n\n📝 **Informe Clínico Detallado**\n\n📌 Datos Recopilados:\n{info}\n\n🔍 **Análisis Clínico**\nPor favor, interpreta esta información desde el punto de vista médico y sugiere hipótesis diagnósticas posibles con base en evidencia científica, factores de riesgo, y la presentación del caso. Finaliza con recomendaciones para el médico tratante."
+
         parts = [
             {"role": "system", "parts": [SYSTEM_PROMPT]},
             {"role": "user", "parts": [analysis_prompt]}
         ]
-        # Adjuntar imagen si existe
+
         if image_data:
             try:
-                img_bytes = base64.b64decode(image_data.split(',')[-1])
-                parts[1]["parts"].append({"inline_data": {"mime_type": "image/png", "data": img_bytes}})
-            except Exception:
-                logger.warning("Imagen no procesada correctamente.", exc_info=True)
+                image_bytes = base64.b64decode(image_data.split(',')[-1])
+                parts[1]["parts"].append({"inline_data": {"mime_type": "image/png", "data": image_bytes}})
+            except Exception as e:
+                logger.warning("No se pudo procesar la imagen enviada.", exc_info=True)
 
-        # Generar respuesta de IA
-        key = tuple(str(p) for p in parts)
         try:
-            ai_response = get_cached_response(key)
+            ai_response = get_cached_response(tuple(map(str, parts)))
             return jsonify({"session_id": session_id, "response": ai_response})
         except Exception as e:
+            logger.error(f"Error en /api/chat: {e}", exc_info=True)
             return jsonify({"error": str(e)}), 500
 
-    # Enviar siguiente pregunta si aún faltan datos
     return jsonify({"session_id": session_id, "response": questions[step]})
 
 if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port
