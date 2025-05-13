@@ -26,7 +26,7 @@ CORS(
 
 # ————— Inicializar Gemini —————
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-MODEL_NAME = "models/gemini-2.0-flash"
+VISION_MODEL = "gemini-pro-vision"  # Modelo especializado para imágenes
 
 # ————— Estado en memoria —————
 session_data = {}
@@ -35,7 +35,7 @@ session_data = {}
 IMAGE_INSTRUCTION = (
     "Eres una IA médica multimodal. Has recibido una imagen médica. "
     "Sin pedir más contexto, analiza la imagen y responde con las siguientes secciones separadas y claras: "
-    "Resumen, Diagnóstico y Tratamientos."
+    "1. Resumen\n2. Hallazgos relevantes\n3. Posibles diagnósticos\n4. Recomendaciones"
 )
 
 # ————— Helper para SID —————
@@ -48,33 +48,78 @@ def analyze_image():
     sid = get_sid()
     session_data.setdefault(sid, {})
 
-    data    = request.get_json() or {}
+    data = request.get_json() or {}
     img_b64 = data.get('image', '')
     logger.info(f"[analyze-image] SID={sid}, img length={len(img_b64)}")
 
     if not img_b64:
-        return jsonify({'response': 'No se ha recibido ninguna imagen.'}), 200
+        return jsonify({'response': 'No se ha recibido ninguna imagen.'}), 400
 
     try:
-        # Llamada multimodal directa a Gemini
-        resp = genai.chat(
-            model=MODEL_NAME,
-            image={"data": img_b64, "mime_type": data.get('image_type', 'image/png')},
-            prompt=IMAGE_INSTRUCTION
+        # Configurar el modelo de visión
+        model = genai.GenerativeModel(VISION_MODEL)
+        
+        # Preparar los componentes del mensaje
+        image_part = {
+            "mime_type": data.get('image_type', 'image/png'),
+            "data": img_b64
+        }
+        
+        # Generar la respuesta
+        response = model.generate_content(
+            contents=[IMAGE_INSTRUCTION, image_part]
         )
-        ai_text = getattr(resp, 'reply', '') or getattr(resp, 'text', '')
-        logger.info(f"[analyze-image] SID={sid}, ai_text len={len(ai_text)}")
-        return jsonify({'response': ai_text.strip()}), 200
+        
+        # Manejar la respuesta
+        if not response.text:
+            raise ValueError("La API no devolvió una respuesta válida")
+            
+        ai_text = response.text
+        logger.info(f"[analyze-image] SID={sid}, respuesta exitosa")
+        
+        return jsonify({
+            'response': ai_text.strip(),
+            'status': 'success'
+        }), 200
 
-    except Exception:
-        logger.exception("[analyze-image] Error generando análisis multimodal")
-        return jsonify({'response': 'Lo siento, no pude procesar la imagen.'}), 500
+    except Exception as e:
+        logger.error(f"[analyze-image] Error: {str(e)}", exc_info=True)
+        return jsonify({
+            'response': 'Error al procesar la imagen. Por favor, inténtalo de nuevo.',
+            'status': 'error',
+            'details': str(e)
+        }), 500
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    # Deshabilitado cuando se analiza imagen directamente
-    return jsonify({'response': ''}), 200
+    try:
+        data = request.get_json() or {}
+        message = data.get('message', '').strip()
+        
+        if not message:
+            return jsonify({'response': 'El mensaje no puede estar vacío'}), 400
+            
+        # Implementación básica de chat (opcional)
+        return jsonify({
+            'response': 'Actualmente solo soportamos análisis de imágenes',
+            'status': 'info'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"[chat] Error: {str(e)}")
+        return jsonify({
+            'response': 'Error en el servidor',
+            'status': 'error'
+        }), 500
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        'status': 'healthy',
+        'model': VISION_MODEL,
+        'ready': True
+    }), 200
 
 if __name__ == '__main__':
     port = int(os.getenv("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=os.getenv("FLASK_DEBUG", False))
