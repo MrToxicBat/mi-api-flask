@@ -1,7 +1,6 @@
 import os
 import uuid
 import logging
-import base64
 from flask import Flask, request, jsonify, session as flask_session
 from flask_cors import CORS
 import google.generativeai as genai
@@ -13,44 +12,24 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "dev_secret_key")
 
+# ——— CORS: permitimos llamadas desde tu dominio real y localhost ———
 CORS(
     app,
-    supports_credentials=True,
-    origins=[os.getenv("FRONTEND_ORIGIN", "https://code-soluction.com")]
+    resources={ r"/api/*": {
+        "origins": [
+            "https://code-solution.com",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000"
+        ]
+    }},
+    supports_credentials=True
 )
 
 # ——— Inicializar Gemini ———
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 MODEL_NAME = "models/gemini-2.0-flash"
 
-
-@app.route('/api/analyze-image', methods=['POST'])
-def analyze_image():
-    """
-    Recibe JSON { image: "<base64>" }
-    Devuelve JSON { description: "texto descriptivo" }
-    """
-    data = request.get_json() or {}
-    img_b64 = data.get('image')
-    if not img_b64:
-        return jsonify({'error': 'No image provided'}), 400
-
-    try:
-        resp = genai.annotate_image(
-            model="models/gemini-image-alpha",
-            image=img_b64,
-            supports=["TEXT"]
-        )
-        description = ""
-        if resp and getattr(resp, "annotations", None):
-            description = resp.annotations[0].text
-        return jsonify({'description': description}), 200
-    except Exception as e:
-        logger.error("Error en /api/analyze-image", exc_info=True)
-        return jsonify({'error': str(e)}), 500
-
-
-# ——— Flujo de chat multimodal ———
+# ——— Parámetros del flujo clínico ———
 required_fields = [
     "motivo_principal",
     "duracion_sintomas",
@@ -90,18 +69,45 @@ def build_summary(collected: dict) -> str:
     ]
     return "Información recopilada hasta ahora:\n" + "\n".join(lines) + "\n\n"
 
-
-# estado en memoria
+# ——— Estado en memoria por sesión ———
 session_data = {}
+
+
+@app.route('/api/analyze-image', methods=['POST'])
+def analyze_image():
+    """
+    Recibe JSON { image: "<base64_puro>" }
+    Devuelve JSON { description: "…texto descriptivo…" }
+    """
+    data = request.get_json() or {}
+    img_b64 = data.get('image')
+    if not img_b64:
+        return jsonify({'error': 'No image provided'}), 400
+
+    try:
+        resp = genai.annotate_image(
+            model="models/gemini-image-alpha",
+            image=img_b64,
+            supports=["TEXT"]
+        )
+        description = ""
+        if resp and getattr(resp, "annotations", None):
+            description = resp.annotations[0].text
+        return jsonify({'description': description}), 200
+
+    except Exception as e:
+        logger.error("Error en /api/analyze-image", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    data       = request.json or {}
+    data       = request.get_json() or {}
     user_text  = data.get('message', '').strip()
-    image_b64  = data.get('image')       # NO usado aquí, lo manejamos en analyze-image
-    image_type = data.get('image_type')  # idem
+    image_b64  = data.get('image')        # si quieres procesar imágenes multimodal aquí
+    image_type = data.get('image_type')
 
-    # inicializar sesión
+    # — Inicializar o recuperar sesión —
     sid = flask_session.get('session_id')
     if not sid or sid not in session_data:
         sid = str(uuid.uuid4())
@@ -113,44 +119,53 @@ def chat():
         }
         logger.info(f"Nueva sesión {sid}")
 
-    step  = flask_session.get('step', 0)
-    state = session_data[sid]
-    collected = state["fields"]
+    step       = flask_session.get('step', 0)
+    state      = session_data[sid]
+    collected  = state["fields"]
+    image_done = state["image_analyzed"]
 
     parts = []
-    # — si quieren procesar imagen multimodal aquí, ya lo harían —
-    # (pero en este flujo, la imagen ya pasó por /analyze-image)
+    # — Caso 1: si llega imagen y no se ha analizado aún —
+    if image_b64 and not image_done:
+        parts.append({
+            "mime_type": image_type,
+            "data": image_b64
+        })
+        prompt_text = "Por favor, analiza esta imagen médica y describe hallazgos relevantes."
+        state["image_analyzed"] = True
 
-    # — guardar texto —
-    if user_text and step < len(required_fields):
-        campo = required_fields[step]
-        collected[campo] = user_text
-        step += 1
-        flask_session['step'] = step
-
-    # — preparar siguiente prompt —
-    if step < len(required_fields):
-        siguiente = required_fields[step]
-        question = field_prompts[siguiente].format(**collected)
-        summary  = build_summary(collected)
-        prompt_text = summary + question
     else:
-        # análisis final
-        info = "\n".join(f"- {k}: {v}" for k, v in collected.items())
-        prompt_text = (
-            "Gracias por toda la información. Con estos datos, analiza en profundidad "
-            "los hallazgos y sugiere diagnósticos, hipótesis y recomendaciones.\n\n"
-            f"Información recopilada:\n{info}"
-        )
-        # reset
-        session_data.pop(sid, None)
-        flask_session.pop('session_id', None)
-        flask_session.pop('step', None)
-        logger.info(f"Sesión {sid} completada")
+        # — Guardar texto en el campo correspondiente —
+        if user_text and step < len(required_fields):
+            campo = required_fields[step]
+            collected[campo] = user_text
+            logger.info(f"Sesión {sid}: guardado {campo} = {user_text!r}")
+            step += 1
+            flask_session['step'] = step
 
-    full_prompt = f"{get_system_instruction()}\n\n{prompt_text}"
-    parts.append({"text": full_prompt})
+        # — Preparar siguiente prompt o finalizar —
+        if step < len(required_fields):
+            siguiente = required_fields[step]
+            question = field_prompts[siguiente].format(**collected)
+            summary  = build_summary(collected)
+            prompt_text = summary + question
+        else:
+            info_lines = "\n".join(f"- {k}: {v}" for k, v in collected.items())
+            prompt_text = (
+                "Gracias por toda la información. Con estos datos, analiza en profundidad "
+                "los hallazgos y sugiere diagnósticos, hipótesis y recomendaciones.\n\n"
+                f"Información recopilada:\n{info_lines}"
+            )
+            # limpiar sesión
+            session_data.pop(sid, None)
+            flask_session.pop('session_id', None)
+            flask_session.pop('step', None)
+            logger.info(f"Sesión {sid} completada")
 
+    # — Siempre anteponemos la instrucción del sistema —
+    parts.append({"text": f"{get_system_instruction()}\n\n{prompt_text}"})
+
+    # — Llamada a Gemini multimodal —
     try:
         model = genai.GenerativeModel(MODEL_NAME)
         resp  = model.generate_content({"parts": parts})
