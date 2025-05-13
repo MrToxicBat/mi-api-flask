@@ -1,280 +1,160 @@
-// chat.js
-document.addEventListener('DOMContentLoaded', function () {
-  const API_URL = 'https://mi-api-flask-6i8o.onrender.com';
+import os
+import uuid
+import logging
+import base64
+from flask import Flask, request, jsonify, session as flask_session
+from flask_cors import CORS
+import google.generativeai as genai
 
-  // — Inicialización de Firebase —
-  const firebaseConfig = {
-    apiKey: "AIzaSyCp4C-DrKuLUxS9yo9VyBYa5CZxm1Q3NBI",
-    authDomain: "ia-medica-6f09e.firebaseapp.com",
-    projectId: "ia-medica-6f09e",
-    storageBucket: "ia-medica-6f09e.appspot.com",
-    messagingSenderId: "747957864751",
-    appId: "1:747957864751:web:a09686be84ed0b3b5db9da"
-  };
-  firebase.initializeApp(firebaseConfig);
-  const auth = firebase.auth();
-  const db   = firebase.firestore();
+# ——— Configuración básica ———
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-  // — Selectores —
-  const chatBox       = document.getElementById('chatBox');
-  const toggleBtn     = document.getElementById('toggleHistory');
-  const historyPanel  = document.getElementById('historyPanel');
-  const newSessionBtn = document.getElementById('newSessionBtn');
-  const sessionsList  = document.getElementById('sessionsList');
-  const textInput     = document.getElementById('textInput');
-  const imageInput    = document.getElementById('imageInput');
-  const sendBtn       = document.getElementById('sendBtn');
+app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY", "dev_secret_key")
 
-  // — Helpers —
-  function scrollToBottom(el) {
-    el.scrollTop = el.scrollHeight;
-  }
+# CORS para tu frontend
+CORS(app,
+     supports_credentials=True,
+     origins=[os.getenv("FRONTEND_ORIGIN", "https://code-soluction.com")])
 
-  function appendMessage(type, text, dateObj) {
-    const msgDate = dateObj || new Date();
-    const bubble = document.createElement('div');
-    bubble.className = `message ${type}`;
-    bubble.innerHTML = `
-      <div>${text}</div>
-      <span class="timestamp">
-        ${msgDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-      </span>
-    `;
-    if (type === 'ai') {
-      const prompts = document.createElement('div');
-      prompts.className = 'bubble-prompts';
-      ['Resumen', 'Diagnóstico', 'Tratamientos'].forEach(label => {
-        const btn = document.createElement('button');
-        btn.textContent = label;
-        btn.onclick = () => {
-          textInput.value = label;
-          sendBtn.click();
-        };
-        prompts.appendChild(btn);
-      });
-      bubble.appendChild(prompts);
-    }
-    chatBox.appendChild(bubble);
-    scrollToBottom(chatBox);
-  }
+# ——— Inicializar Gemini ———
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-  async function saveMessage(type, text) {
-    const sessionId = window.__currentSessionId;
-    if (!sessionId || !window.currentUid) return;
-    await db
-      .collection('users').doc(window.currentUid)
-      .collection('sessions').doc(sessionId)
-      .collection('messages')
-      .add({
-        type,
-        text,
-        timestamp: firebase.firestore.FieldValue.serverTimestamp()
-      });
-  }
+# Modelo multimodal válido
+MODEL_NAME = "models/gemini-2.0-flash"
 
-  // — Sesiones en Firestore —
-  async function renderSessions() {
-    if (!sessionsList || !window.currentUid) return;
-    const snap = await db
-      .collection('users').doc(window.currentUid)
-      .collection('sessions')
-      .orderBy('createdAt', 'desc')
-      .get();
-    sessionsList.innerHTML = '';
-    snap.forEach(doc => {
-      const data = doc.data();
-      const item = document.createElement('div');
-      item.className = 'session-item';
-      item.textContent = data.title || 'Sin título';
-      item.onclick = () => loadSession(doc.id);
-      sessionsList.appendChild(item);
-    });
-  }
+# ——— Flujo de preguntas ———
+required_fields = [
+    "motivo_principal",
+    "duracion_sintomas",
+    "intensidad",
+    "edad",
+    "sexo",
+    "antecedentes_medicos",
+]
+field_prompts = {
+    "motivo_principal":
+        "👋 Hola, doctor/a. ¿Cuál considera usted que es el motivo principal de consulta de este paciente?",
+    "duracion_sintomas":
+        "⏳ Gracias. Me dice que el motivo es “{motivo_principal}”. ¿Cuánto tiempo lleva con esos síntomas?",
+    "intensidad":
+        "⚖️ Entendido. ¿Qué tan severos son esos síntomas (leve, moderado, severo)?",
+    "edad":
+        "🎂 Perfecto. ¿Qué edad tiene el paciente?",
+    "sexo":
+        "🚻 Bien. ¿Cuál es el sexo asignado al nacer y el género actual?",
+    "antecedentes_medicos":
+        "📝 ¿Antecedentes médicos relevantes (enfermedades previas, cirugías, alergias, medicación)?",
+}
 
-  async function createSession() {
-    if (!window.currentUid) return;
-    const ref = await db
-      .collection('users').doc(window.currentUid)
-      .collection('sessions')
-      .add({
-        title: 'Nueva conversación',
-        createdAt: firebase.firestore.FieldValue.serverTimestamp()
-      });
-    window.__currentSessionId = ref.id;
-    await renderSessions();
-    await loadSession(ref.id);
-  }
+def get_system_instruction():
+    return (
+        "Eres una IA médica multimodal experta en interpretación de imágenes médicas. "
+        "Al recibir una imagen, realiza un análisis profundo y estructurado. "
+        "Luego, recopila datos clínicos paso a paso y al final sugiere diagnósticos y recomendaciones."
+    )
 
-  async function loadSession(sessionId) {
-    if (!chatBox) return;
-    window.__currentSessionId = sessionId;
-    chatBox.innerHTML = '';
-    const snap = await db
-      .collection('users').doc(window.currentUid)
-      .collection('sessions').doc(sessionId)
-      .collection('messages')
-      .orderBy('timestamp', 'asc')
-      .get();
-    snap.forEach(doc => {
-      const { type, text, timestamp } = doc.data();
-      appendMessage(type, text, timestamp && timestamp.toDate());
-    });
-  }
+def build_summary(collected: dict) -> str:
+    if not collected:
+        return ""
+    lines = [f"- **{k.replace('_',' ').capitalize()}**: {v}"
+             for k, v in collected.items()]
+    return "📋 Información recopilada hasta ahora:\n" + "\n".join(lines) + "\n\n"
 
-  async function generateSessionTitle() {
-    const sessionId = window.__currentSessionId;
-    if (!sessionId || !window.currentUid) return;
-    const snap = await db
-      .collection('users').doc(window.currentUid)
-      .collection('sessions').doc(sessionId)
-      .collection('messages')
-      .orderBy('timestamp','asc')
-      .get();
-    const msgs = snap.docs.map(d => d.data().text).filter(Boolean);
-    if (msgs.length < 2) return;
-    try {
-      const res = await fetch(`${API_URL}/api/generate-title`, {
-        method: 'POST',
-        headers: { 'Content-Type':'application/json' },
-        body: JSON.stringify({ messages: msgs })
-      });
-      if (res.ok) {
-        const json = await res.json();
-        const newTitle = json.title || 'Sin título';
-        await db
-          .collection('users').doc(window.currentUid)
-          .collection('sessions').doc(sessionId)
-          .update({ title: newTitle });
-        await renderSessions();
-      }
-    } catch (e) {
-      console.warn('Error generando título:', e);
-    }
-  }
+# Estado en memoria
+# session_data[sid] = { "fields": {...}, "image_analyzed": bool }
+session_data = {}
 
-  // — Envío de texto al chatbot —
-  async function sendMessage() {
-    const text = textInput.value.trim();
-    if (!text) return;
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    data       = request.json or {}
+    user_text  = data.get('message', '').strip()
+    image_b64  = data.get('image')
+    image_type = data.get('image_type')
 
-    appendMessage('user', text);
-    await saveMessage('user', text);
-
-    const loader = document.createElement('div');
-    loader.className = 'message ai typing-indicator';
-    loader.innerHTML = `
-      <div style="display:flex;align-items:center;">
-        IA está escribiendo
-        <div class="typing-dots"><span></span><span></span><span></span></div>
-      </div>
-    `;
-    chatBox.appendChild(loader);
-    scrollToBottom(chatBox);
-
-    let aiResponse = 'Lo siento, no recibí respuesta.';
-    try {
-      const res = await fetch(`${API_URL}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type':'application/json' },
-        body: JSON.stringify({
-          session_id: window.__currentSessionId,
-          message: text
-        })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        aiResponse = data.response || aiResponse;
-      } else {
-        console.error('Error /api/chat:', res.status, await res.text());
-      }
-    } catch (err) {
-      console.error('Error comunicando con API chat:', err);
-    }
-
-    loader.remove();
-    appendMessage('ai', aiResponse);
-    await saveMessage('ai', aiResponse);
-    await generateSessionTitle();
-
-    textInput.value = '';
-  }
-
-  // — Subida y análisis automático de imagen —
-  imageInput.addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      const dataURL = ev.target.result;
-      appendMessage('user', `<img src="${dataURL}" style="max-width:200px;border-radius:8px;">`);
-      await saveMessage('user', `<img src='${dataURL}'>`);
-
-      const b64 = dataURL.split(',')[1];
-      try {
-        const resp = await fetch(`${API_URL}/api/analyze-image`, {
-          method: 'POST',
-          headers: { 'Content-Type':'application/json' },
-          body: JSON.stringify({ image: b64 })
-        });
-
-        if (!resp.ok) {
-          const txt = await resp.text();
-          console.error('Analyze-image HTTP error:', resp.status, txt);
-          appendMessage('ai', 'Ha ocurrido un error de red al analizar la imagen.');
-          await saveMessage('ai', 'Ha ocurrido un error de red al analizar la imagen.');
-        } else {
-          const body = await resp.json();
-          if (body.error) {
-            appendMessage('ai', `Error al analizar la imagen: ${body.error}`);
-            await saveMessage('ai', `Error al analizar la imagen: ${body.error}`);
-          } else {
-            const desc = (body.description || '').trim();
-            // mostramos descripción o mensaje genérico
-            appendMessage('ai', desc || 'Imagen recibida correctamente.');
-            await saveMessage('ai', desc || 'Imagen recibida correctamente.');
-            // pregunta de seguimiento
-            appendMessage('ai', '¿Qué quieres que haga con esta información?');
-            await saveMessage('ai', '¿Qué quieres que haga con esta información?');
-          }
+    # — Inicializar sesión si es nueva —
+    sid = flask_session.get('session_id')
+    if not sid or sid not in session_data:
+        sid = str(uuid.uuid4())
+        flask_session['session_id'] = sid
+        flask_session['step'] = 0
+        session_data[sid] = {
+            "fields": {},
+            "image_analyzed": False
         }
-      } catch (err) {
-        console.error('Error al analizar la imagen:', err);
-        appendMessage('ai', 'Ha ocurrido un error inesperado al analizar la imagen.');
-        await saveMessage('ai', 'Ha ocurrido un error inesperado al analizar la imagen.');
-      }
-    };
-    reader.readAsDataURL(file);
-    e.target.value = '';
-  });
+        logger.info(f"Nueva sesión {sid}")
 
-  // — Botón enviar y Enter —
-  sendBtn.addEventListener('click', sendMessage);
-  textInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
-  });
+    step       = flask_session.get('step', 0)
+    state      = session_data[sid]
+    collected  = state["fields"]
+    image_done = state["image_analyzed"]
 
-  // — Toggle historial en móvil —
-  toggleBtn.addEventListener('click', () => {
-    historyPanel.classList.toggle('open');
-  });
+    parts = []
+    # — Caso 1: analizar imagen antes que nada —
+    if image_b64 and not image_done:
+        parts.append({
+            "mime_type": image_type,
+            "data": image_b64
+        })
+        # Nuevo prompt de análisis super detallado
+        prompt_text = (
+            "🖼️ **Análisis exhaustivo de imagen**:\n"
+            "1. 🔍 **Calidad técnica**: evalúa proyección, resolución, contraste y posibles artefactos.\n"
+            "2. 🧩 **Estructuras y morfología**: describe directamente la anatomía visible, contornos, simetría, densidades.\n"
+            "3. 📐 **Medidas y proporciones**: menciona dimensiones, relaciones anatómicas relevantes.\n"
+            "4. ⚠️ **Hallazgos patológicos**: destaca zonas anómalas (lesiones, masas, calcificaciones, edema).\n"
+            "5. 💡 **Hipótesis diagnóstica diferencial**: propone posibles causas ordenadas por probabilidad.\n"
+            "6. 📝 **Recomendaciones**: sugiere estudios adicionales o pasos clínicos siguientes.\n"
+            "Usa una respuesta bien seccionada, con emojis moderados para marcar apartados."
+        )
+        state["image_analyzed"] = True
 
-  // — Autenticación y sesión inicial —
-  auth.onAuthStateChanged(async user => {
-    const loginUrl = '/iniciar-sesion';
-    if (!user) {
-      if (!location.pathname.includes(loginUrl)) location.href = loginUrl;
-      return;
-    }
-    window.currentUid = user.uid;
-    await renderSessions();
-    if (!window.__currentSessionId) {
-      await createSession();
-    } else {
-      await loadSession(window.__currentSessionId);
-    }
-    newSessionBtn.addEventListener('click', createSession);
-  });
-});
+    else:
+        # — Guardar texto en campo si corresponde —
+        if user_text and step < len(required_fields):
+            campo = required_fields[step]
+            collected[campo] = user_text
+            logger.info(f"Sesión {sid}: guardado {campo} = {user_text!r}")
+            step += 1
+            flask_session['step'] = step
+
+        # — Preparar siguiente prompt —
+        if step < len(required_fields):
+            siguiente = required_fields[step]
+            question = field_prompts[siguiente].format(**collected)
+            summary = build_summary(collected)
+            prompt_text = summary + question
+        else:
+            # — Análisis final —
+            info_lines = "\n".join(f"- {k}: {v}" for k, v in collected.items())
+            prompt_text = (
+                "✅ Gracias por toda la información clínica.\n"
+                "Con estos datos, realiza un análisis detallado:\n"
+                "• 🔍 Hallazgos\n"
+                "• 💡 Hipótesis diagnóstica\n"
+                "• 📝 Recomendaciones\n\n"
+                f"📋 Información completa:\n{info_lines}"
+            )
+            # reset session
+            session_data.pop(sid, None)
+            flask_session.pop('session_id', None)
+            flask_session.pop('step', None)
+            logger.info(f"Sesión {sid} completada")
+
+    # — Construir prompt completo y llamar al modelo —
+    full_text = f"{get_system_instruction()}\n\n{prompt_text}"
+    parts.append({"text": full_text})
+
+    try:
+        model = genai.GenerativeModel(MODEL_NAME)
+        resp  = model.generate_content({"parts": parts})
+        ai_text = getattr(resp, "text", "").strip()
+        return jsonify({"response": ai_text})
+    except Exception as e:
+        logger.error("Error en /api/chat", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    port = int(os.getenv("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
