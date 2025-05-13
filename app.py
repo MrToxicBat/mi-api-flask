@@ -59,8 +59,7 @@ def build_summary(collected: dict) -> str:
     return "📋 Información recopilada hasta ahora:\n" + "\n".join(lines) + "\n\n"
 
 # Memoria de sesión
-# session_data[sid] = {"fields": {...}, "image_analyzed": bool}
-session_data = {}
+session_data = {}  # {sid: {fields: {}, image_analyzed: bool}}
 
 # ——— Endpoint para análisis de imagen ———
 @app.route('/api/analyze-image', methods=['OPTIONS', 'POST'])
@@ -103,6 +102,21 @@ def chat():
     image_b64  = data.get('image')
     image_type = data.get('image_type')
 
+    # Detección de palabras clave para respuestas basadas en imagen
+    if user_text.lower() in ["resumen", "diagnostico", "tratamiento"] and image_b64:
+        prompt_text = f"🖼️ Basado únicamente en la imagen, por favor proporciona el {user_text.capitalize()}."
+        parts = [
+            {"mime_type": image_type, "data": image_b64},
+            {"text": f"{get_system_instruction()}\n\n{prompt_text}"}
+        ]
+        try:
+            model = genai.GenerativeModel(MODEL_NAME)
+            resp  = model.generate_content({"parts": parts})
+            return jsonify({"response": resp.text.strip()})
+        except Exception as e:
+            logger.error("Error en /api/chat (keyword image)", exc_info=True)
+            return jsonify({"error": str(e)}), 500
+
     # Inicializar sesión
     sid = flask_session.get('session_id')
     if not sid or sid not in session_data:
@@ -121,6 +135,7 @@ def chat():
     # Si llega imagen y aún no se analizó
     if image_b64 and not image_done:
         parts.append({"mime_type": image_type, "data": image_b64})
+        state["image_analyzed"] = True
         prompt_text = (
             "🖼️ **Análisis exhaustivo de imagen**:\n"
             "1. 🔍 Calidad técnica\n"
@@ -130,8 +145,6 @@ def chat():
             "5. 💡 Hipótesis diagnóstica\n"
             "6. 📝 Recomendaciones"
         )
-        state["image_analyzed"] = True
-
     else:
         # Guardar texto en campo
         if user_text and step < len(required_fields):
