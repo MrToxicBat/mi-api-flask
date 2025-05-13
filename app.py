@@ -1,7 +1,7 @@
 import os
 import uuid
 import logging
-from flask import Flask, request, jsonify, session as flask_session
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import google.generativeai as genai
 
@@ -39,16 +39,22 @@ SYSTEM_INSTRUCTION = (
     "Responde claramente al comando \"diagnóstico\", \"resumen\" o \"tratamientos\" según lo solicite el usuario."
 )
 
+# ————— Helper para SID —————
+def get_sid():
+    sid = request.headers.get('X-Session-Id')
+    if not sid:
+        sid = str(uuid.uuid4())
+    return sid
+
 @app.route('/api/analyze-image', methods=['POST'])
 def analyze_image():
     data    = request.get_json() or {}
     img_b64 = data.get('image', '')
-    sid = flask_session.get('session_id') or str(uuid.uuid4())
-    flask_session['session_id'] = sid
+    sid = get_sid()
 
-    # Inicializar descripción vacía
+    # Inicializar estado
     state = session_data.setdefault(sid, {"image_desc": ""})
-    description = state.get('image_desc', "")
+    description = ""
 
     if img_b64:
         try:
@@ -62,8 +68,10 @@ def analyze_image():
             logger.info(f"[analyze-image] Descripción: {description[:80]}…")
         except Exception:
             logger.exception("[analyze-image] Error llamando a Gemini")
+    else:
+        logger.warning("[analyze-image] No se proporcionó imagen")
 
-    # Guardar descripción siempre como cadena
+    # Guardar descripción
     state['image_desc'] = description or ""
     return jsonify({'response': description or ""}), 200
 
@@ -71,19 +79,19 @@ def analyze_image():
 def chat():
     data      = request.get_json() or {}
     user_text = data.get('message', '').strip()
-    sid = flask_session.get('session_id') or str(uuid.uuid4())
-    flask_session['session_id'] = sid
+    sid = get_sid()
 
-    # Obtenemos descripción garantizada como cadena
     state = session_data.setdefault(sid, {"image_desc": ""})
     image_desc = state.get('image_desc') or ""
 
-    # Construir prompt sin errores de tipo
+    if not image_desc:
+        return jsonify({'response': 'Por favor, adjunta primero la imagen para analizarla.'}), 200
+
     prompt = (
         SYSTEM_INSTRUCTION + "\n\n"
         f"Imagen descrita: {image_desc}\n"
         f"Contexto: {user_text}\n\n"
-        "Por favor, proporciona un diagnóstico detallado, un resumen de tu análisis y, si lo solicito, tratamientos adecuados."
+        "Ahora genera diagnóstico, resumen y tratamientos según pida el usuario."
     )
     logger.info(f"[chat] Prompt a Gemini: {prompt[:100]}…")
 
@@ -93,7 +101,6 @@ def chat():
         ai_text = getattr(resp, "text", "").strip()
         logger.info(f"[chat] Respuesta IA: {ai_text[:80]}…")
         return jsonify({"response": ai_text}), 200
-
     except Exception:
         logger.exception("[chat] Error generando respuesta IA")
         return jsonify({"response": "Lo siento, ha ocurrido un error interno."}), 500
