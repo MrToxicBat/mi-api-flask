@@ -1,6 +1,6 @@
 gunicorn==20.1.0
 flask
 flask-cors
-google-generativeai>=0.8.5
+google-generativeai>=0.3.2  # Versión más reciente con API estable
 python-dotenv
-Flask-Session==0.3.2 
+Flask-Session==0.3.2
