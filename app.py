@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "dev_secret_key")
 
-# Habilitar CORS
+# Habilitar CORS para /api/*
 CORS(app,
      supports_credentials=True,
      resources={r"/api/*": {"origins": ["https://code-soluction.com"]}})
@@ -21,26 +21,43 @@ CORS(app,
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 MODEL_NAME = "models/gemini-2.0-flash"
 
-# ——— Prompt base análisis ———
-def get_system_instruction_analysis():
-    return (
-        "Eres un médico radiólogo experto. Analiza la imagen médica y describe lo que ves "
-        "en lenguaje claro pero profesional. Explica posibles diagnósticos y observaciones importantes."
-    )
+# Prompt único para todo el flujo
+UNIFIED_PROMPT = """
+Eres una inteligencia artificial médica especializada en el análisis de imágenes médicas 
+(radiografías, resonancias, tomografías) y en responder consultas médicas por texto. 
+Debes actuar como un médico especialista, con explicaciones claras, precisas y comprensibles 
+para el paciente, pero con rigor técnico.
 
-# ——— Prompt base conversación posterior ———
-def get_system_instruction_conversation():
-    return (
-        "Eres un médico traumatólogo conversando con un paciente sobre un diagnóstico previo. "
-        "Responde de forma cercana, empática y explicativa, usando un lenguaje que pueda entender una persona sin conocimientos médicos. "
-        "Incluye recomendaciones prácticas, opciones de tratamiento y posibles pasos a seguir, sin sonar robótico."
-    )
+Instrucciones:
+- Si el usuario envía una imagen médica, analiza posibles patologías, anomalías o hallazgos relevantes.
+- Si el usuario envía texto, responde de forma clara, con un diagnóstico probable o sugerencias basadas en los datos.
+- Explica términos médicos complejos de forma sencilla para que el paciente los entienda.
+- Si hay varias posibilidades diagnósticas, indícalas y explica la diferencia.
+- Nunca inventes información médica; si no tienes certeza, indícalo y sugiere consulta con un especialista.
+- Usa un tono profesional y empático.
+- Si el contenido no es médico, indícalo amablemente.
 
-# ——— Memoria de sesión ———
-# Estructura: {sid: {"analysis": str}}
+Formato de respuesta:
+1. Resumen breve del hallazgo o respuesta.
+2. Explicación detallada.
+3. Sugerencias o próximos pasos.
+
+Ejemplo de respuesta para imagen:
+Resumen: Posible fractura distal del radio.
+Explicación: En la imagen se observa una línea radiolúcida que atraviesa la región distal...
+Sugerencias: Recomiendo inmovilización y valoración por traumatología.
+
+Ejemplo de respuesta para texto:
+Resumen: Posible infección respiratoria.
+Explicación: Por los síntomas de fiebre, tos productiva y dolor torácico...
+Sugerencias: Acudir a consulta médica para revisión y posible tratamiento antibiótico.
+
+Responde siempre siguiendo el formato anterior.
+"""
+
+# Memoria de sesión
 session_data = {}
 
-# ——— Análisis de imagen ———
 @app.route('/api/analyze-image', methods=['OPTIONS', 'POST'])
 def analyze_image():
     if request.method == 'OPTIONS':
@@ -52,22 +69,19 @@ def analyze_image():
     if not image_b64 or not image_type:
         return jsonify({"error": "Falta image o image_type"}), 400
 
-    # Nueva sesión
+    # Crear nueva sesión
     sid = str(uuid.uuid4())
     flask_session['session_id'] = sid
     session_data[sid] = {"analysis": None}
 
     prompt = (
         "🖼️ Análisis de imagen médica:\n"
-        "1. Describe hallazgos relevantes.\n"
-        "2. Indica posible diagnóstico.\n"
-        "3. Añade recomendaciones iniciales.\n"
-        "Usa un tono profesional pero comprensible."
+        "Por favor analiza esta imagen y responde siguiendo las instrucciones generales."
     )
 
     parts = [
         {"mime_type": image_type, "data": image_b64},
-        {"text": f"{get_system_instruction_analysis()}\n\n{prompt}"}
+        {"text": f"{UNIFIED_PROMPT}\n\n{prompt}"}
     ]
 
     try:
@@ -86,32 +100,32 @@ def analyze_image():
         logger.error("Error en /api/analyze-image", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
-# ——— Conversación posterior ———
 @app.route('/api/chat', methods=['POST'])
 def chat():
     data = request.json or {}
     user_text = data.get('message', '').strip()
     sid = data.get('session_id') or flask_session.get('session_id')
 
-    if not sid or sid not in session_data:
-        return jsonify({"error": "No hay análisis previo en la sesión"}), 400
+    analysis_context = ""
+    if sid and sid in session_data:
+        analysis_context = session_data[sid].get("analysis", "")
 
-    analysis_context = session_data[sid].get("analysis", "")
-
-    # Construir prompt con contexto del análisis
-    prompt_text = (
-        f"Diagnóstico previo:\n{analysis_context}\n\n"
-        f"Pregunta del paciente: {user_text}\n\n"
-        "Responde en un tono empático y explicativo."
-    )
+    # Construir prompt
+    if analysis_context:
+        prompt_text = (
+            f"Diagnóstico previo:\n{analysis_context}\n\n"
+            f"Pregunta del paciente: {user_text}\n\n"
+            "Responde siguiendo las instrucciones generales, en un tono empático y explicativo."
+        )
+    else:
+        prompt_text = (
+            f"Pregunta del paciente: {user_text}\n\n"
+            "Responde siguiendo las instrucciones generales, en un tono empático y explicativo."
+        )
 
     try:
         model = genai.GenerativeModel(MODEL_NAME)
-        resp = model.generate_content({
-            "parts": [
-                {"text": f"{get_system_instruction_conversation()}\n\n{prompt_text}"}
-            ]
-        })
+        resp = model.generate_content(f"{UNIFIED_PROMPT}\n\n{prompt_text}")
         return jsonify({"response": resp.text.strip()})
     except Exception as e:
         logger.error("Error en /api/chat", exc_info=True)
