@@ -21,39 +21,27 @@ CORS(app,
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 MODEL_NAME = "models/gemini-2.0-flash"
 
-# Prompt único para todo el flujo
-UNIFIED_PROMPT = """
-Eres una inteligencia artificial médica especializada en el análisis de imágenes médicas 
-(radiografías, resonancias, tomografías) y en responder consultas médicas por texto. 
-Debes actuar como un médico especialista, con explicaciones claras, precisas y comprensibles 
-para el paciente, pero con rigor técnico.
+# Prompt base para conversación humana con estructura resumida, diagnóstico y tratamiento
+def build_prompt_human_dialog(user_text: str, analysis_context: str) -> str:
+    prompt = f"""
+Eres un médico especialista que conversa con un paciente. Tu objetivo es responder de forma humana, empática y cercana, como si estuvieras hablando con un amigo que quiere entender su situación médica.
 
-Instrucciones:
-- Si el usuario envía una imagen médica, analiza posibles patologías, anomalías o hallazgos relevantes.
-- Si el usuario envía texto, responde de forma clara, con un diagnóstico probable o sugerencias basadas en los datos.
-- Explica términos médicos complejos de forma sencilla para que el paciente los entienda.
-- Si hay varias posibilidades diagnósticas, indícalas y explica la diferencia.
-- Nunca inventes información médica; si no tienes certeza, indícalo y sugiere consulta con un especialista.
-- Usa un tono profesional y empático.
-- Si el contenido no es médico, indícalo amablemente.
+Cuando respondas, siempre estructura tu respuesta de forma natural integrando estas tres partes clave:
 
-Formato de respuesta:
-1. Resumen breve del hallazgo o respuesta.
-2. Explicación detallada.
-3. Sugerencias o próximos pasos.
+1. Resumen: Una explicación sencilla y breve de la situación actual o hallazgos.
+2. Diagnóstico: Qué significa esa situación en términos médicos, explicado con palabras fáciles.
+3. Tratamientos: Qué opciones tiene el paciente, recomendaciones prácticas y pasos a seguir.
 
-Ejemplo de respuesta para imagen:
-Resumen: Posible fractura distal del radio.
-Explicación: En la imagen se observa una línea radiolúcida que atraviesa la región distal...
-Sugerencias: Recomiendo inmovilización y valoración por traumatología.
+No hagas listas rígidas ni uses lenguaje técnico complicado. Usa un tono cálido, positivo y claro. Puedes empezar saludando o agradeciendo la confianza.
 
-Ejemplo de respuesta para texto:
-Resumen: Posible infección respiratoria.
-Explicación: Por los síntomas de fiebre, tos productiva y dolor torácico...
-Sugerencias: Acudir a consulta médica para revisión y posible tratamiento antibiótico.
+Recuerda siempre ser humano, claro y paciente. No repitas lo que dice el paciente textualmente ni respondas de forma mecánica.
 
-Responde siempre siguiendo el formato anterior.
+Pregunta del paciente: {user_text}
+
+Información clínica previa:
+{analysis_context}
 """
+    return prompt
 
 # Memoria de sesión
 session_data = {}
@@ -75,13 +63,13 @@ def analyze_image():
     session_data[sid] = {"analysis": None}
 
     prompt = (
-        "🖼️ Análisis de imagen médica:\n"
-        "Por favor analiza esta imagen y responde siguiendo las instrucciones generales."
+        "Por favor analiza esta imagen médica y describe lo que ves en un lenguaje claro y profesional, "
+        "incluyendo posibles diagnósticos y recomendaciones iniciales."
     )
 
     parts = [
         {"mime_type": image_type, "data": image_b64},
-        {"text": f"{UNIFIED_PROMPT}\n\n{prompt}"}
+        {"text": prompt}
     ]
 
     try:
@@ -110,27 +98,16 @@ def chat():
     if sid and sid in session_data:
         analysis_context = session_data[sid].get("analysis", "")
 
-    # Construir prompt
-    if analysis_context:
-        prompt_text = (
-            f"Diagnóstico previo:\n{analysis_context}\n\n"
-            f"Pregunta del paciente: {user_text}\n\n"
-            "Responde siguiendo las instrucciones generales, en un tono empático y explicativo."
-        )
-    else:
-        prompt_text = (
-            f"Pregunta del paciente: {user_text}\n\n"
-            "Responde siguiendo las instrucciones generales, en un tono empático y explicativo."
-        )
+    # Construir prompt usando la función para diálogo humano y estructura clara
+    prompt_text = build_prompt_human_dialog(user_text, analysis_context)
 
     try:
         model = genai.GenerativeModel(MODEL_NAME)
-        resp = model.generate_content(f"{UNIFIED_PROMPT}\n\n{prompt_text}")
+        resp = model.generate_content({"parts": [{"text": prompt_text}]})
         return jsonify({"response": resp.text.strip()})
     except Exception as e:
         logger.error("Error en /api/chat", exc_info=True)
         return jsonify({"error": str(e)}), 500
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv("PORT", 5000)))
