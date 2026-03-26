@@ -1,7 +1,7 @@
 import os
 import uuid
 import logging
-from flask import Flask, request, jsonify, make_response, session as flask_session
+from flask import Flask, request, jsonify, make_response, session as flask_session, render_template
 from flask_cors import CORS
 import google.generativeai as genai
 
@@ -45,6 +45,12 @@ Información clínica previa:
 
 # Memoria de sesión
 session_data = {}
+
+
+@app.route('/')
+def home():
+    return render_template('index.html')
+
 
 @app.route('/api/analyze-image', methods=['OPTIONS', 'POST'])
 def analyze_image():
