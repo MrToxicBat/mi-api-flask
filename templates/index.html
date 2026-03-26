@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Apple Store Showcase</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+</head>
+<body>
+  <header class="hero reveal">
+    <nav class="nav">
+      <div class="logo"> Apple House</div>
+      <a class="cta" href="#productos">Comprar ahora</a>
+    </nav>
+
+    <div class="hero-content">
+      <p class="badge">Nueva colección 2026</p>
+      <h1>Lo mejor de Apple en una sola tienda.</h1>
+      <p>
+        Descubre iPhone, MacBook, iPad, Apple Watch y AirPods con diseño premium,
+        envíos rápidos y financiación a tu medida.
+      </p>
+    </div>
+    <div class="hero-glow"></div>
+  </header>
+
+  <main>
+    <section id="productos" class="products section">
+      <h2 class="section-title reveal">Productos destacados</h2>
+      <div class="grid">
+        <article class="card reveal">
+          <h3>iPhone 16 Pro</h3>
+          <p>Chip A18 Pro, cámara avanzada y titanio ultraligero.</p>
+          <span class="price">Desde $1,099</span>
+          <button>Agregar al carrito</button>
+        </article>
+
+        <article class="card reveal">
+          <h3>MacBook Pro M4</h3>
+          <p>Rendimiento profesional con autonomía para todo el día.</p>
+          <span class="price">Desde $1,999</span>
+          <button>Agregar al carrito</button>
+        </article>
+
+        <article class="card reveal">
+          <h3>iPad Pro</h3>
+          <p>Pantalla Ultra Retina XDR y potencia para crear sin límites.</p>
+          <span class="price">Desde $999</span>
+          <button>Agregar al carrito</button>
+        </article>
+
+        <article class="card reveal">
+          <h3>Apple Watch Series 11</h3>
+          <p>Salud, deporte y conectividad en tu muñeca.</p>
+          <span class="price">Desde $499</span>
+          <button>Agregar al carrito</button>
+        </article>
+      </div>
+    </section>
+
+    <section class="feature section reveal">
+      <h2>Experiencia premium</h2>
+      <p>
+        Compra en línea con seguridad, soporte especializado y garantía oficial en
+        todos los productos Apple.
+      </p>
+    </section>
+  </main>
+
+  <footer class="footer reveal">
+    <p>© 2026 Apple House. Tu tienda Apple de confianza.</p>
+  </footer>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
